@@ -1,0 +1,88 @@
+"""Command-line entry point, used by the GitHub Actions jobs.
+
+    python -m pipeline.run update            # refresh this season, injuries, models, and data/
+    python -m pipeline.run setup             # first-time history load (three past seasons + injury reports)
+    python -m pipeline.run backfill 2025     # load one past season from NBA box scores (slow)
+    python -m pipeline.run export            # rebuild data/ from the database only
+"""
+import argparse
+import json
+import logging
+import sys
+from datetime import datetime
+
+from . import db
+from .export.build import export_all
+from .ingest.update import backfill_regular_season, load_archive_season, update_current_season
+from .providers.nba_cdn import NbaCdnProvider
+
+
+def _last_completed_start_year(now=None) -> int:
+    """Start year of the most recent finished regular season (2025 for 2025-26 once it is over)."""
+    now = now or datetime.utcnow()
+    return now.year - 1 if now.month >= 7 else now.year - 2
+
+
+def run_injuries(conn) -> dict:
+    from .injuries.ingest import fetch_latest
+    try:
+        res = fetch_latest(conn)
+        ok = res.get("status") in ("stored", "already stored")
+        db.mark_attempt(conn, "injuries", ok, json.dumps(res)[:400])
+        return res
+    except Exception as exc:  # the dashboard keeps the last good report
+        db.mark_attempt(conn, "injuries", False, str(exc))
+        return {"status": "error", "error": str(exc)}
+
+
+def main(argv=None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    parser = argparse.ArgumentParser(prog="pipeline")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    up = sub.add_parser("update", help="refresh the current season and rebuild the JSON")
+    up.add_argument("--refresh-days", type=int, default=2)
+    sub.add_parser("setup", help="load three past seasons of play-by-play and last season's injury reports")
+    bf = sub.add_parser("backfill", help="load a past regular season from NBA box scores")
+    bf.add_argument("start_year", type=int, help="e.g. 2025 for the 2025-26 season")
+    sub.add_parser("export", help="rebuild the JSON from the database only")
+    args = parser.parse_args(argv)
+
+    conn = db.connect()
+    provider = NbaCdnProvider()
+    result = {}
+    if args.cmd == "setup":
+        last = _last_completed_start_year()
+        # Three seasons: ratings use the last two; the minutes model needs one more so that
+        # early-season games in its training data have a previous season behind them.
+        result["archive"] = [load_archive_season(conn, y) for y in (last - 2, last - 1, last)]
+        from .injuries.ingest import backfill_season
+        sid = f"{last}-{str(last + 1)[-2:]}"
+        try:
+            result["injury_history"] = backfill_season(conn, sid)
+            db.mark_attempt(conn, "injury_history", True, json.dumps(result["injury_history"]))
+        except Exception as exc:
+            result["injury_history"] = {"error": str(exc)}
+            db.mark_attempt(conn, "injury_history", False, str(exc))
+        result["update"] = update_current_season(conn, provider)
+        result["injuries"] = run_injuries(conn)
+    elif args.cmd == "update":
+        result["update"] = update_current_season(conn, provider, args.refresh_days)
+        result["injuries"] = run_injuries(conn)
+    elif args.cmd == "backfill":
+        bf_result = backfill_regular_season(conn, provider, args.start_year)
+        bf_result["missing_count"] = len(bf_result["missing"])
+        bf_result["missing"] = bf_result["missing"][:20]
+        result["backfill"] = bf_result
+    result["export"] = export_all(conn)
+    conn.close()
+    print(json.dumps(result, indent=2, default=str))
+
+    # Fail the job (so GitHub shows a red X) only if nothing could be fetched at all.
+    up_res = result.get("update")
+    if up_res and up_res["errors"] and up_res["box_fetched"] == 0 and up_res["schedule_games"] == 0:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
