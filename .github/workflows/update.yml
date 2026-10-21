@@ -1,0 +1,95 @@
+name: Update NBA data
+
+# Runs on a schedule, or by hand from the Actions tab ("Run workflow").
+# The database is kept as a file on a GitHub Release named "data-store",
+# replaced on every run, so the repo itself never fills up with data
+# commits. The page and its JSON are published straight to GitHub Pages.
+
+on:
+  schedule:
+    # Times are UTC. Eastern is UTC-4 until early November, then UTC-5.
+    - cron: "17 9 * * *"           # ~5 AM ET: final box scores from last night
+    - cron: "41 12 * * *"          # ~8:40 AM ET: morning refresh
+    - cron: "13,43 16-23 * * *"    # ~noon to 7:45 PM ET, every 30 minutes
+    - cron: "13,43 0-5 * * *"      # ~8 PM to 1:45 AM ET, every 30 minutes (games)
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "What to run"
+        type: choice
+        default: update
+        options:
+          - update
+          - setup-history
+
+permissions:
+  contents: write     # read and replace the database file on the release
+  pages: write        # publish the dashboard
+  id-token: write
+
+concurrency:
+  group: nba-data     # never let two runs edit the database at once
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install Python packages
+        run: pip install -r requirements.txt
+
+      - name: Download the database
+        run: |
+          mkdir -p db
+          if gh release download data-store --pattern nba.sqlite.gz --dir db --clobber; then
+            gunzip -f db/nba.sqlite.gz
+            echo "Database restored."
+          else
+            echo "No saved database yet; starting a new one."
+          fi
+
+      - name: Load past seasons (first-time setup)
+        if: github.event_name == 'workflow_dispatch' && inputs.job == 'setup-history'
+        run: python -m pipeline.run setup
+
+      - name: Update this season
+        if: github.event_name != 'workflow_dispatch' || inputs.job == 'update'
+        run: python -m pipeline.run update
+
+      - name: Save the database
+        if: always()
+        run: |
+          if [ -f db/nba.sqlite ]; then
+            gh release view data-store >/dev/null 2>&1 || \
+              gh release create data-store --title "Data store" \
+                --notes "Database used by the dashboard. Replaced automatically on every run." --latest=false
+            python -c "import sqlite3; c = sqlite3.connect('db/nba.sqlite'); c.execute('VACUUM'); c.close()"
+            gzip -kf db/nba.sqlite
+            gh release upload data-store db/nba.sqlite.gz --clobber
+          fi
+
+      - name: Build the site
+        run: |
+          mkdir -p _site
+          cp index.html _site/
+          cp -r data _site/data
+
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v5
