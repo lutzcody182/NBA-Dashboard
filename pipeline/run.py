@@ -68,6 +68,11 @@ def main(argv=None) -> int:
     elif args.cmd == "update":
         result["update"] = update_current_season(conn, provider, args.refresh_days)
         result["injuries"] = run_injuries(conn)
+    if args.cmd in ("update", "setup"):
+        from .diagnostics import probe
+        result["sources"] = probe()
+        db.mark_attempt(conn, "source_check", True,
+                        ", ".join(f"{k}: {v.get('status', v.get('error'))}" for k, v in result["sources"].items()))
     elif args.cmd == "backfill":
         bf_result = backfill_regular_season(conn, provider, args.start_year)
         bf_result["missing_count"] = len(bf_result["missing"])
@@ -77,10 +82,8 @@ def main(argv=None) -> int:
     conn.close()
     print(json.dumps(result, indent=2, default=str))
 
-    # Fail the job (so GitHub shows a red X) only if nothing could be fetched at all.
-    up_res = result.get("update")
-    if up_res and up_res["errors"] and up_res["box_fetched"] == 0 and up_res["schedule_games"] == 0:
-        return 1
+    # Always publish what we have: a feed that fails shows as a red "source failed" marker on
+    # the dashboard's data status instead of stopping the site from updating at all.
     return 0
 
 
