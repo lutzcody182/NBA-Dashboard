@@ -203,6 +203,8 @@ def update_rosters_from_box(conn, box: BoxScore, source: str, now: str) -> None:
                    VALUES (?, ?, ?, NULL, ?, ?, ?)""",
                 (pid, team_id, box.game_date, p.jersey, source, now),
             )
+        if not box.full_roster:
+            continue   # injured players are missing from this box score, so absence means nothing
         for row in conn.execute(
             "SELECT player_id, start_date FROM roster_stints WHERE team_id = ? AND end_date IS NULL",
             (team_id,),
@@ -212,3 +214,53 @@ def update_rosters_from_box(conn, box: BoxScore, source: str, now: str) -> None:
                     "UPDATE roster_stints SET end_date = ? WHERE player_id = ? AND team_id = ? AND end_date IS NULL",
                     (box.game_date, row["player_id"], team_id),
                 )
+
+
+def sync_rosters(conn, rosters: list, source: str, as_of: str) -> dict:
+    """Make open roster stints match full team rosters: [(TeamRef, [player dicts])].
+
+    Players on a list get an open stint with that team (closing any other);
+    players with an open stint who are on no list are closed as of `as_of`.
+    """
+    now = utc_now_iso()
+    listed, jerseys = {}, {}
+    for ref, players in rosters:
+        upsert_team(conn, ref)
+        for p in players:
+            listed[p["player_id"]] = ref.team_id
+            jerseys[p["player_id"]] = p.get("jersey")
+            conn.execute(
+                """INSERT INTO players (player_id, full_name, first_name, last_name, position, birth_date,
+                       height_in, weight_lb, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(player_id) DO UPDATE SET full_name = excluded.full_name,
+                     first_name = COALESCE(excluded.first_name, players.first_name),
+                     last_name = COALESCE(excluded.last_name, players.last_name),
+                     position = COALESCE(excluded.position, players.position),
+                     birth_date = COALESCE(excluded.birth_date, players.birth_date),
+                     height_in = COALESCE(excluded.height_in, players.height_in),
+                     weight_lb = COALESCE(excluded.weight_lb, players.weight_lb),
+                     fetched_at = excluded.fetched_at""",
+                (p["player_id"], p["full_name"], p.get("first_name"), p.get("last_name"), p.get("position"),
+                 p.get("birth_date"), p.get("height_in"), p.get("weight_lb"), now))
+    moved = added = removed = 0
+    open_now = {r[0]: r[1] for r in conn.execute(
+        "SELECT player_id, team_id FROM roster_stints WHERE end_date IS NULL")}
+    for pid, team in listed.items():
+        cur = open_now.get(pid)
+        if cur == team:
+            continue
+        if cur is not None:
+            conn.execute("UPDATE roster_stints SET end_date = ? WHERE player_id = ? AND end_date IS NULL",
+                         (as_of, pid))
+            moved += 1
+        else:
+            added += 1
+        conn.execute(
+            """INSERT OR IGNORE INTO roster_stints (player_id, team_id, start_date, end_date, jersey, source,
+                   fetched_at) VALUES (?, ?, ?, NULL, ?, ?, ?)""", (pid, team, as_of, jerseys.get(pid), source, now))
+    for pid in set(open_now) - set(listed):
+        conn.execute("UPDATE roster_stints SET end_date = ? WHERE player_id = ? AND end_date IS NULL",
+                     (as_of, pid))
+        removed += 1
+    conn.commit()
+    return {"players": len(listed), "added": added, "moved": moved, "removed": removed}
