@@ -102,6 +102,7 @@ class BoxScore:
     home: TeamLine
     away: TeamLine
     officials: list = field(default_factory=list)   # [(official_id, name)]
+    full_roster: bool = True    # lists the whole game-day roster (NBA does; ESPN leaves out the injured)
 
 
 class GamesProvider(Protocol):
