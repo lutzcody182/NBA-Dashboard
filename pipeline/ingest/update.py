@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from .. import db
 from ..pbp.parse import parse_actions
 from .pbp_store import store_archive_game, store_pbp
-from .store import store_boxscore, store_schedule
+from .store import store_boxscore, store_schedule, sync_rosters
 
 log = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
@@ -58,6 +58,18 @@ def update_current_season(conn, provider, refresh_days: int = 2) -> dict:
         summary["errors"].append(f"schedule: {exc}")
         return summary
 
+    if hasattr(provider, "get_rosters") and _due(conn, "rosters", hours=6):
+        try:
+            res = sync_rosters(conn, provider.get_rosters(), provider.name, today_et().isoformat())
+            summary["rosters"] = res
+            db.mark_attempt(conn, "rosters", True,
+                            f'{res["players"]} players on {provider.name} team rosters '
+                            f'({res["added"]} added, {res["moved"]} moved, {res["removed"]} removed)')
+        except Exception as exc:
+            log.exception("Roster update failed")
+            db.mark_attempt(conn, "rosters", False, str(exc))
+            summary["errors"].append(f"rosters: {exc}")
+
     for gid in _games_needing_box(conn, schedule, refresh_days, utc_now_iso()):
         try:
             box = provider.get_boxscore(gid)
@@ -94,8 +106,19 @@ def update_current_season(conn, provider, refresh_days: int = 2) -> dict:
         f'{summary["box_fetched"]} fetched, {summary["box_not_published"]} not yet published'
         + (f', {len(summary["errors"])} errors' if summary["errors"] else ""),
     )
-    db.mark_attempt(conn, "rosters", ok, "from game-day box scores")
+    if not hasattr(provider, "get_rosters"):
+        db.mark_attempt(conn, "rosters", ok, "from game-day box scores")
+    if getattr(provider.ids if hasattr(provider, "ids") else None, "new_ids", 0):
+        summary["new_player_ids"] = provider.ids.new_ids
     return summary
+
+
+def _due(conn, dataset, hours) -> bool:
+    row = conn.execute("SELECT last_success_at FROM data_freshness WHERE dataset = ?", (dataset,)).fetchone()
+    if not row or not row[0]:
+        return True
+    last = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+    return (datetime.now(last.tzinfo) - last).total_seconds() >= hours * 3600
 
 
 def backfill_regular_season(conn, provider, start_year: int, max_games: int = 1230) -> dict:
@@ -158,11 +181,41 @@ def _fetch_pbp(conn, provider, game_id, summary) -> None:
                           (game_id,)):
         starters.setdefault(r[0], []).append(r[1])
     g = parse_actions(game_id, actions, row[0], row[1], starters)
+    check_against_box(conn, g)
     store_pbp(conn, g, provider.name)
+    if getattr(provider, "minutes_from_pbp", False) and g.quality >= 0.995 and all(s.ok for s in g.stints):
+        # The box score only had whole minutes; use the exact on-court time instead.
+        for pid, p in g.players.items():
+            if p.get("team_id") and p["seconds"] > 0:
+                conn.execute(
+                    "UPDATE player_game_stats SET seconds = ? WHERE game_id = ? AND player_id = ? "
+                    "AND ABS(seconds - ?) <= 60",
+                    (int(round(p["seconds"])), game_id, pid, p["seconds"]))
     conn.commit()
     summary["pbp_fetched"] += 1
     if g.quality < 0.995 or any(not s.ok for s in g.stints):
         summary["pbp_low_quality"] += 1
+
+
+def check_against_box(conn, g) -> None:
+    """Compare play-by-play totals with the box score; a points mismatch marks every stint unverified."""
+    box = {r[0]: r for r in conn.execute(
+        "SELECT team_id, pts, fga, fta FROM team_game_stats WHERE game_id = ?", (g.game_id,))}
+    if not box:
+        return
+    teams = (g.home_id, g.away_id)
+    pts = dict(zip(teams, g.final_score))
+    for t in teams:
+        if t not in box:
+            continue
+        fga = sum(s.stats[t]["fga"] for s in g.stints)
+        fta = sum(s.stats[t]["fta"] for s in g.stints)
+        if pts[t] != box[t][1]:
+            g.notes.append(f"team {t}: play-by-play has {pts[t]} points, box score {box[t][1]}")
+            for s in g.stints:
+                s.ok = False
+        if fga != box[t][2] or fta != box[t][3]:
+            g.notes.append(f"team {t}: play-by-play FGA/FTA {fga}/{fta}, box score {box[t][2]}/{box[t][3]}")
 
 
 def load_archive_season(conn, start_year: int, frame=None) -> dict:
