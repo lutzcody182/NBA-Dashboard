@@ -229,6 +229,7 @@ def test_roster_sync_moves_and_releases(conn):
 # -- the whole update job, with ESPN answering from the fixtures -----------------------------
 
 class FakeEspn(EspnProvider):
+    pbp_valid_since = ""
     def __init__(self, conn):
         from datetime import datetime
         super().__init__(conn, now=datetime(2026, 10, 22, 12))
@@ -287,3 +288,18 @@ def test_pick_provider_sticks_with_espn_for_the_season(conn):
         assert conn.execute("SELECT status FROM data_freshness WHERE dataset = 'data_source'").fetchone()[0] == "ok"
     finally:
         run.NbaCdnProvider = orig
+
+
+def test_missed_heave_is_not_a_shot_attempt(conn):
+    s = summary()
+    heave = {"type": {"id": "282", "text": "Heave Jump Shot"}, "text": "Paul George misses heave jump shot",
+             "period": {"number": 2}, "clock": {"displayValue": "0.4"}, "scoringPlay": False, "scoreValue": 0,
+             "shootingPlay": True, "pointsAttempted": 3, "team": {"id": "2"},
+             "participants": [{"athlete": {"id": "4251"}}], "coordinate": {"x": 25, "y": 60}}
+    s["plays"].append(heave)
+    box, athletes = parse_box(s, PlayerIds(conn))
+    acts = convert_plays(s, athletes)
+    assert acts[-1]["actionType"] == "heave"
+    made = dict(heave, scoringPlay=True, scoreValue=3, text="Paul George makes heave jump shot")
+    s["plays"][-1] = made
+    assert convert_plays(s, athletes)[-1]["actionType"] == "3pt"
