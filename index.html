@@ -415,7 +415,7 @@ function renderFreshness() {
     : "No data yet";
   const label = { schedule: "Schedule", box_scores: "Box scores", rosters: "Rosters", play_by_play: "Play-by-play",
     injuries: "Injury report", ratings: "Player ratings", projections: "Minutes projections",
-    injury_history: "Past injury reports" };
+    injury_history: "Past injury reports", source_check: "Source check", data_source: "Game data from" };
   $("#fresh-detail").innerHTML = rows.length
     ? `<div class="table-wrap"><table class="fresh-table"><thead><tr><th class="l">Source</th><th class="l">Status</th><th class="l">Last success</th><th class="l">Last attempt</th><th class="l">Detail</th></tr></thead><tbody>${
         rows.map((r) => `<tr><td class="l">${esc(label[r.dataset] ?? r.dataset)}</td><td class="l"><span class="pill ${r.status === "ok" ? "confirmed" : "missing"}">${esc(r.status)}</span></td><td class="l">${fmtStamp(r.last_success_at)}</td><td class="l">${fmtStamp(r.last_attempt_at)}</td><td class="l">${esc(r.detail)}</td></tr>`).join("")
