@@ -42,7 +42,14 @@ def _sum_ratios(g: pd.DataFrame) -> dict:
     poss, n = s["poss"], len(g)
 
     def r(num, den):
-        return float(num / den) if den else None
+        return float(num / den) if den and num is not None and num == num else None
+
+    for k in ("pts_paint", "pts_second_chance", "pts_fast_break",
+              "opp_pts_paint", "opp_pts_second_chance", "opp_pts_fast_break"):
+        # Some sources leave these out (ESPN has no second-chance points): report nothing
+        # rather than a total that silently skips games.
+        if k not in g or g[k].isna().any():
+            s[k] = None
 
     return {
         "games": int(n),
