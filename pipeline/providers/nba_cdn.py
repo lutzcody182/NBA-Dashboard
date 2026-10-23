@@ -42,6 +42,7 @@ class NbaCdnProvider:
         self.session = session or requests.Session()
         self.session.headers.update(HEADERS)
         self.retries = retries
+        self.last_status = {}
 
     # -- fetching ---------------------------------------------------------
 
@@ -58,6 +59,7 @@ class NbaCdnProvider:
             except requests.RequestException as exc:
                 last_error = exc
             else:
+                self.last_status[url] = r.status_code
                 if r.status_code in (403, 404):
                     return None
                 if r.status_code == 200:
@@ -72,7 +74,8 @@ class NbaCdnProvider:
     def get_schedule(self) -> list:
         data = self._get_json(SCHEDULE_URL)
         if data is None:
-            raise FeedError("Schedule file is missing from the CDN")
+            code = self.last_status.get(SCHEDULE_URL)
+            raise FeedError(f"Schedule file not served by the CDN (HTTP {code})")
         return parse_schedule(data)
 
     def get_boxscore(self, game_id: str) -> Optional[BoxScore]:
