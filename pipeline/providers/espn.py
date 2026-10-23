@@ -540,7 +540,10 @@ def convert_plays(summary: dict, athletes: dict) -> list:
             out.append(a)
 
         lower = tt.lower()
-        if kind == "shot":
+        if kind == "shot" and "heave" in lower and not p.get("scoringPlay"):
+            # A missed end-of-quarter heave is not a field goal attempt in the box score.
+            act(actionType="heave", personId=p0, possession=team)
+        elif kind == "shot":
             pts = int(p.get("pointsAttempted") or (3 if "three point" in text.lower() else 2))
             zone = shot_zone(pts, _coord(p), text, tt)
             made = bool(p.get("scoringPlay"))
@@ -610,6 +613,7 @@ def convert_plays(summary: dict, athletes: dict) -> list:
 class EspnProvider:
     name = "espn"
     minutes_from_pbp = True   # box minutes are whole numbers; exact seconds come from play-by-play
+    pbp_valid_since = "2026-10-23T18:30:00Z"   # games parsed earlier are re-read (missed heaves fix)
 
     def __init__(self, conn, session: Optional[requests.Session] = None, retries: int = 3,
                  now: Optional[datetime] = None):
