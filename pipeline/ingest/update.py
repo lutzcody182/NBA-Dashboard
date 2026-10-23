@@ -86,12 +86,15 @@ def update_current_season(conn, provider, refresh_days: int = 2) -> dict:
                 _fetch_pbp(conn, provider, box.game_id, summary)
         provider.polite_pause()
 
-    # Catch up on finals that have a box score but no play-by-play yet.
+    # Catch up on finals that have a box score but no play-by-play yet, and re-read games
+    # parsed before the provider's converter last changed (provider.pbp_valid_since).
+    since = getattr(provider, "pbp_valid_since", "")
     missing = [r[0] for r in conn.execute(
         """SELECT g.game_id FROM games g JOIN team_game_stats t ON t.game_id = g.game_id AND t.is_home = 1
            LEFT JOIN pbp_games p ON p.game_id = g.game_id
-           WHERE g.status = 'final' AND p.game_id IS NULL AND g.season_id = (SELECT MAX(season_id) FROM games)
-           LIMIT 60""")]
+           WHERE g.status = 'final' AND g.season_id = (SELECT MAX(season_id) FROM games)
+             AND (p.game_id IS NULL OR (p.source = ? AND p.fetched_at < ?))
+           LIMIT 120""", (provider.name, since))]
     if missing and hasattr(provider, "get_playbyplay"):
         for gid in missing:
             _fetch_pbp(conn, provider, gid, summary)
