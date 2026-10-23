@@ -23,6 +23,30 @@ def _last_completed_start_year(now=None) -> int:
     return now.year - 1 if now.month >= 7 else now.year - 2
 
 
+def pick_provider(conn, log=print):
+    """NBA's own feed when it answers; ESPN otherwise.
+
+    Once a season has games stored from ESPN it stays on ESPN, so the same
+    game is never stored twice under two different IDs.
+    """
+    from .providers.espn import EspnProvider
+    from .providers.nba_cdn import FeedError
+    espn = EspnProvider(conn)
+    sid = f"{espn.start_year}-{str(espn.start_year + 1)[-2:]}"
+    if conn.execute("SELECT 1 FROM games WHERE season_id = ? AND source = 'espn' LIMIT 1", (sid,)).fetchone():
+        db.mark_attempt(conn, "data_source", True, f"ESPN (used for all of {sid} once it started there)")
+        return espn
+    nba = NbaCdnProvider()
+    try:
+        nba.get_schedule()
+        db.mark_attempt(conn, "data_source", True, "NBA (cdn.nba.com)")
+        return nba
+    except (FeedError, Exception) as exc:
+        log(f"NBA schedule unavailable ({exc}); using ESPN")
+        db.mark_attempt(conn, "data_source", True, f"ESPN (NBA's feed: {exc})")
+        return espn
+
+
 def run_injuries(conn) -> dict:
     from .injuries.ingest import fetch_latest
     try:
@@ -48,8 +72,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     conn = db.connect()
-    provider = NbaCdnProvider()
-    result = {}
+    provider = pick_provider(conn, logging.info) if args.cmd in ("update", "setup") else NbaCdnProvider()
+    result = {"provider": provider.name}
     if args.cmd == "setup":
         last = _last_completed_start_year()
         # Three seasons: ratings use the last two; the minutes model needs one more so that
