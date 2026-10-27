@@ -305,11 +305,13 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
     from ..models.projections import project_games
 
     out = {"files": [], "errors": []}
+    rated = {}
     for sid in (prev, season):
         try:
             r = R.compute(conn, sid, team_tables.get(sid))
             if not r["players"]:
                 continue
+            rated[sid] = r
             st = load_stints(conn, [sid])
             oo = L.on_off(st)
             for p in r["players"]:
@@ -331,7 +333,8 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
         today = today_et()
         days = [today.isoformat(), (today + timedelta(days=1)).isoformat()]
         games = [dict(r) for r in conn.execute(
-            f"""SELECT game_id, game_date, tip_utc, home_team_id, away_team_id, status, season_type FROM games
+            f"""SELECT game_id, game_date, tip_utc, home_team_id, away_team_id, status, season_type, neutral_site
+                FROM games
                 WHERE game_date IN ({",".join("?" * len(days))}) AND status IN ('scheduled', 'live')
                 ORDER BY tip_utc""", days)]
         rates = play_rates(conn)
@@ -339,16 +342,36 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
         proj["generated_at"] = utc_now_iso()
         _write(out_dir / "projections.json", proj)
         out["files"].append("projections.json")
-        save_pregame_snapshot(conn, proj)
         dbmod.mark_attempt(conn, "projections", True, f"{len(proj['games'])} games projected")
     except Exception as exc:
         log.exception("Projections failed")
         out["errors"].append(f"projections: {exc}")
         dbmod.mark_attempt(conn, "projections", False, f"{exc}; {traceback.format_exc(limit=1)}")
+        return out
+
+    sims = None
+    try:
+        from ..models import game_sims
+        sims = game_sims.build(conn, season, games, proj, rated.get(season))
+        _write(out_dir / "sims.json", sims)
+        out["files"].append("sims.json")
+        sq = game_sims.team_shot_quality(conn, season)
+        if sq:
+            _write(out_dir / "teams" / f"shot_quality_{season}.json", sq)
+            out["files"].append(f"teams/shot_quality_{season}.json")
+        rep = (sims.get("model") or {}).get("report", {}).get("scores", {})
+        dbmod.mark_attempt(conn, "simulations", True,
+                           f"{len(sims['games'])} games simulated; replay of {sims.get('calibration_season')}: "
+                           f"{rep.get('accuracy', 0):.1%} winners, Brier {rep.get('brier', 0):.3f}")
+    except Exception as exc:
+        log.exception("Simulations failed")
+        out["errors"].append(f"simulations: {exc}")
+        dbmod.mark_attempt(conn, "simulations", False, f"{exc}; {traceback.format_exc(limit=1)}")
+    save_pregame_snapshot(conn, proj, sims)
     return out
 
 
-def save_pregame_snapshot(conn, proj: dict) -> None:
+def save_pregame_snapshot(conn, proj: dict, sims: dict = None) -> None:
     """Keep what the model said before each game, for honest backtests later (Phase 6)."""
     if not proj.get("games"):
         return
@@ -356,18 +379,34 @@ def save_pregame_snapshot(conn, proj: dict) -> None:
     rep = proj.get("injury_report") or {}
     cur = conn.execute(
         """INSERT INTO model_runs (started_at, finished_at, run_type, model_version, data_cutoff, status, notes)
-           VALUES (?, ?, 'pregame', 'minutes-1', ?, 'ok', ?)""",
-        (now, now, now, f"injury report {rep.get('report_time_et')}"))
+           VALUES (?, ?, 'pregame', ?, ?, 'ok', ?)""",
+        (now, now, "minutes-1+sim-1" if sims and sims.get("games") else "minutes-1", now,
+         f"injury report {rep.get('report_time_et')}"))
     run_id = cur.lastrowid
+    player_stats = {}
+    for g in (sims or {}).get("games", []):
+        conn.execute(
+            """INSERT OR REPLACE INTO game_projections (run_id, game_id, n_sims, home_win_prob, home_pts_mean,
+                   away_pts_mean, spread_mean, total_mean, total_p10, total_p90, possessions_mean, ot_prob,
+                   inputs_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (run_id, g["game_id"], g["n_sims"], g["home_win"], g["home_pts"], g["away_pts"], g["margin"],
+             g["total"], g["total_q"]["0.1"], g["total_q"]["0.9"], g["inputs"].get("pace"), g["overtime"],
+             json.dumps(g["inputs"])))
+        for t in g["teams"].values():
+            for p in t["players"]:
+                player_stats[(g["game_id"], p["player_id"])] = p
     for g in proj["games"]:
         for team_id, t in g["teams"].items():
             for p in t["players"]:
+                ps = player_stats.get((g["game_id"], p["player_id"]), {})
                 conn.execute(
                     """INSERT OR REPLACE INTO player_projections (run_id, game_id, player_id, availability, play_prob,
-                           minutes_mean, minutes_p10, minutes_p90) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                           minutes_mean, minutes_p10, minutes_p90, pts_mean, reb_mean, ast_mean, fg3m_mean,
+                           tov_mean) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (run_id, g["game_id"], p["player_id"], p["status"],
                      0.0 if p["status"] == "out" else (p["appear"] or {}).get("p", 0.0),
-                     p["min"], p["p10"], p["p90"]))
+                     p["min"], p["p10"], p["p90"], ps.get("pts"), ps.get("reb"), ps.get("ast"), ps.get("fg3m"),
+                     ps.get("tov")))
             for sc in t["scenarios"]:
                 conn.execute(
                     """INSERT OR REPLACE INTO injury_scenarios (run_id, game_id, team_id, scenario_key, probability,
