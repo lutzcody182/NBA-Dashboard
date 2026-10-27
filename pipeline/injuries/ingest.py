@@ -59,7 +59,8 @@ def _resolve_team(printed, lookup):
     if not printed:
         return None
     p = printed.lower()
-    hits = [tid for tid, (nick, _) in lookup.items() if nick and p.endswith(nick)]
+    # whole words only: "Charlotte Hornets" must not also match the Nets
+    hits = [tid for tid, (nick, _) in lookup.items() if nick and (p == nick or p.endswith(" " + nick))]
     return hits[0] if len(hits) == 1 else None
 
 
