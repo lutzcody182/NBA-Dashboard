@@ -204,6 +204,10 @@ def _is_coach_dnp(reason: str) -> bool:
     return "coach" in r
 
 
+PREV_GAME_WEIGHT = 0.5
+PREV_GAMES_CAP = 6
+
+
 def appearance_odds(conn, team_id: int, season: str, players) -> dict:
     """How often each player gets into games when he is healthy.
 
@@ -231,11 +235,31 @@ def appearance_odds(conn, team_id: int, season: str, players) -> dict:
                 eligible += 1
             if eligible >= 10:
                 break
-        source = "this season"
-        if eligible == 0:
-            played, eligible, source = _last_season_odds(conn, p, team_id, prev)
-        out[p] = {"p": (played + 1) / (eligible + 2), "played": played, "eligible": eligible, "source": source}
+        # Last season's record is the prior: each of those games counts PREV_GAME_WEIGHT of a game
+        # this season, up to PREV_GAMES_CAP games' worth. Coaches' choices this season (often a new
+        # team and role) take over within a couple of weeks.
+        pp, pe, psrc = _last_season_odds(conn, p, team_id, prev)
+        if pe == 0:
+            pp, pe, psrc = _last_season_any_team(conn, p, prev)
+        w = min(PREV_GAME_WEIGHT, PREV_GAMES_CAP / pe) if pe else 0.0
+        p_hat = (played + w * pp + 1) / (eligible + w * pe + 2)
+        source = "this season" + (f" + {psrc}" if pe else "") if eligible else (psrc if pe else "no record")
+        out[p] = {"p": p_hat, "played": played, "eligible": eligible, "prev_played": pp, "prev_eligible": pe,
+                  "source": source}
     return out
+
+
+def _last_season_any_team(conn, player_id, prev):
+    """Last season's record across every team he played for (traded or signed since)."""
+    teams = [r[0] for r in conn.execute(
+        """SELECT DISTINCT p.team_id FROM player_game_stats p JOIN games g ON g.game_id = p.game_id
+           WHERE p.player_id = ? AND g.season_id = ? AND p.seconds > 0""", (player_id, prev))]
+    played = eligible = 0
+    src = "no record"
+    for t in teams:
+        a, b, src = _last_season_odds(conn, player_id, t, prev)
+        played, eligible = played + a, eligible + b
+    return played, eligible, (src.replace("last season", "last season, other team") if teams else src)
 
 
 def _last_season_odds(conn, player_id, team_id, prev):
