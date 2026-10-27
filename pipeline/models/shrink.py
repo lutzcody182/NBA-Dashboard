@@ -69,17 +69,17 @@ def _sums(df, made, tries, by="player_id"):
 
 
 def calibrate(cur: pd.DataFrame, prev: pd.DataFrame, made: str, tries: str,
-              cutoffs, min_test: float = 1.0) -> ShrinkFit:
+              cutoffs, min_test: float = 1.0, k_grid=None, by: str = "player_id") -> ShrinkFit:
     """Pick k and w for one stat on a season with a previous season behind it.
 
     cur, prev: player-game frames with columns player_id, game_date, made, tries.
     """
-    pm, pt = _sums(prev, made, tries) if prev is not None and len(prev) else (pd.Series(dtype=float),) * 2
+    pm, pt = _sums(prev, made, tries, by) if prev is not None and len(prev) else (pd.Series(dtype=float),) * 2
     stacks = []
     for cut in cutoffs:
         before, after = cur[cur["game_date"] < cut], cur[cur["game_date"] >= cut]
-        bm, bt = _sums(before, made, tries)
-        am, at = _sums(after, made, tries)
+        bm, bt = _sums(before, made, tries, by)
+        am, at = _sums(after, made, tries, by)
         league = bm.sum() / bt.sum() if bt.sum() else 0.0
         ids = at[at >= min_test].index
         frame = pd.DataFrame({
@@ -99,7 +99,7 @@ def calibrate(cur: pd.DataFrame, prev: pd.DataFrame, made: str, tries: str,
         return float(np.sum(wts * (target - est) ** 2) / np.sum(wts))
 
     grid, best = {}, None
-    for k in K_GRID:
+    for k in (K_GRID if k_grid is None else k_grid):
         for w in W_GRID:
             num = data["bm"] + w * data["pm"] + k * data["league"]
             den = data["bt"] + w * data["pt"] + k
