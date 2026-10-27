@@ -21,6 +21,7 @@
   --bad: #E2604F;
   --good-bg: rgba(63, 185, 163, 0.14);
   --bad-bg: rgba(226, 96, 79, 0.14);
+  --sim-away: #5E7FA8;
   --radius-sm: 4px;
   --radius-md: 8px;
   --cond: "Barlow Semi Condensed", "Arial Narrow", sans-serif;
@@ -144,6 +145,7 @@ td.name small { color: var(--muted); margin-left: 6px; }
 .cmp td.a { text-align: left; }
 .edge { color: var(--good); }
 .game-foot { display: flex; justify-content: space-between; gap: 8px; padding: 8px 14px 12px; color: var(--muted); font-size: 13px; }
+.foot-btns { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .game-foot button { background: none; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 4px 10px; cursor: pointer; color: var(--text); }
 .roster { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; padding: 0 14px 12px; font-size: 13px; }
 .roster h4 { margin: 8px 0 4px; font: 600 14px var(--cond); display: flex; gap: 8px; align-items: center; }
@@ -170,6 +172,23 @@ td.name small { color: var(--muted); margin-left: 6px; }
 .rot .scen { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 8px; }
 .rot .scen button { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px 8px; font-size: 12px; cursor: pointer; color: var(--muted); }
 .rot .scen button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+.simstrip { padding: 0 14px 10px; }
+.winbar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--line); }
+.winbar i { background: var(--sim-away); }
+.winbar b { background: var(--accent); }
+.simline { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--muted); margin-top: 5px; }
+.simline strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.simpanel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 18px; padding: 2px 14px 14px; }
+.simpanel h4 { margin: 10px 0 6px; font: 600 15px var(--cond); }
+.simpanel .meta { color: var(--muted); font-size: 12px; margin: 4px 0 6px; }
+.simpanel table td, .simpanel table th { padding: 3px 5px; font-size: 13px; border-bottom: 1px dashed var(--line); position: static; background: none; cursor: default; }
+.simpanel table td.name { white-space: normal; }
+.hist svg { width: 100%; height: auto; display: block; }
+.hist text { fill: var(--muted); font: 11px var(--body); }
+.moves td.v { font-variant-numeric: tabular-nums; }
+.moves td.up { color: var(--good); } .moves td.down { color: var(--bad); }
+.cal-row td { font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) { .simpanel { grid-template-columns: minmax(0, 1fr); } }
 .range { position: relative; display: inline-block; width: 84px; height: 6px; background: var(--line); border-radius: 3px; vertical-align: middle; }
 .range i { position: absolute; top: 0; bottom: 0; background: rgba(224, 123, 57, .35); border-radius: 3px; }
 .range b { position: absolute; top: -2px; width: 2px; height: 10px; background: var(--accent); }
@@ -259,7 +278,7 @@ tr.sel { background: var(--panel-2); }
       </div>
     </div>
     <h2 id="games-title">Games</h2>
-    <p class="sub">Season ratings for both teams, side by side, and each team's projected rotation from the latest official injury report. Opponent-adjusted ratings correct for who each team has played. Game simulations arrive in Phase 3.</p>
+    <p class="sub">Season ratings for both teams, side by side, and each team's projected rotation from the latest official injury report. Opponent-adjusted ratings correct for who each team has played. The bar under each game is 10,000 simulated games: who wins how often, the projected score, spread and total. Open the simulation for the spread of outcomes, what moved it, and player projections.</p>
     <div class="games" id="games"></div>
   </section>
 
@@ -306,6 +325,7 @@ tr.sel { background: var(--panel-2); }
         <button data-group="overview" aria-pressed="true">Overview</button>
         <button data-group="factors" aria-pressed="false">Four factors</button>
         <button data-group="scoring" aria-pressed="false">Shot profile and scoring</button>
+        <button data-group="shots" aria-pressed="false">Shot quality</button>
         <button data-group="splits" aria-pressed="false">Splits</button>
       </div>
     </div>
@@ -357,6 +377,10 @@ tr.sel { background: var(--panel-2); }
       <div class="panel"><h3>Minutes projections</h3><div id="m-minutes"></div></div>
       <div class="panel"><h3>How much evidence each stat needs</h3><div id="m-shrink"></div></div>
       <div class="panel"><h3>Injury report</h3><div id="m-injury"></div></div>
+      <div class="panel"><h3>Game simulations</h3><div id="m-sims"></div></div>
+      <div class="panel"><h3>Schedule and fatigue</h3><div id="m-sched"></div></div>
+      <div class="panel"><h3>Who picks up the shots</h3><div id="m-usage"></div></div>
+      <div class="panel"><h3>Team rates and shot quality</h3><div id="m-rates"></div></div>
     </div>
   </section>
 
@@ -373,7 +397,7 @@ const S = {
   day: "today", focusGame: null,
   leaders: { sort: "pts", dir: -1 },
   teamsView: { group: "overview", sort: "adj_net", dir: -1, team: null, roll: 10 },
-  proj: null, projByGame: {}, scenario: {}, pratings: {}, lineups: {},
+  proj: null, projByGame: {}, scenario: {}, pratings: {}, lineups: {}, sims: null, simByGame: {}, sq: {},
   playersView: { group: "overview", sort: "overall", dir: -1, player: null, all: false },
 };
 
@@ -415,7 +439,8 @@ function renderFreshness() {
     : "No data yet";
   const label = { schedule: "Schedule", box_scores: "Box scores", rosters: "Rosters", play_by_play: "Play-by-play",
     injuries: "Injury report", ratings: "Player ratings", projections: "Minutes projections",
-    injury_history: "Past injury reports", source_check: "Source check", data_source: "Game data from" };
+    injury_history: "Past injury reports", source_check: "Source check", data_source: "Game data from",
+    simulations: "Game simulations" };
   $("#fresh-detail").innerHTML = rows.length
     ? `<div class="table-wrap"><table class="fresh-table"><thead><tr><th class="l">Source</th><th class="l">Status</th><th class="l">Last success</th><th class="l">Last attempt</th><th class="l">Detail</th></tr></thead><tbody>${
         rows.map((r) => `<tr><td class="l">${esc(label[r.dataset] ?? r.dataset)}</td><td class="l"><span class="pill ${r.status === "ok" ? "confirmed" : "missing"}">${esc(r.status)}</span></td><td class="l">${fmtStamp(r.last_success_at)}</td><td class="l">${fmtStamp(r.last_attempt_at)}</td><td class="l">${esc(r.detail)}</td></tr>`).join("")
@@ -507,22 +532,92 @@ function renderGames() {
       <div class="game-head"><div class="matchup">${abbr(g.away_team_id)}${g.away_score != null ? ` <span class="num">${g.away_score}</span>` : ""}<span class="at">at</span>${abbr(g.home_team_id)}${g.home_score != null ? ` <span class="num">${g.home_score}</span>` : ""}</div>
       <div class="when ${st.live ? "live" : ""}">${esc(st.text)}${g.season_type === "preseason" ? " (preseason)" : ""}</div></div>
       <table class="cmp"><thead><tr><th>${esc(S.teamById[g.away_team_id]?.name ?? "")} <span class="num">${rec[g.away_team_id] ?? ""}</span></th><th></th><th style="text-align:right">${esc(S.teamById[g.home_team_id]?.name ?? "")} <span class="num">${rec[g.home_team_id] ?? ""}</span></th></tr></thead><tbody>${cmp}</tbody></table>
+      ${simStrip(g)}
       ${rotSummary(g)}
-      <div class="game-foot"><span>Ranks out of 30, ${games}</span><button data-roster="${g.game_id}" aria-expanded="false">${S.projByGame[g.game_id] ? "Show rotations" : "Show rosters"}</button></div>
+      <div class="game-foot"><span>Ranks out of 30, ${games}</span><span class="foot-btns">${S.simByGame[g.game_id] ? `<button data-sim="${g.game_id}" aria-expanded="false">Show simulation</button> ` : ""}<button data-roster="${g.game_id}" aria-expanded="false">${S.projByGame[g.game_id] ? "Show rotations" : "Show rosters"}</button></span></div>
+      <div class="simpanel" id="s-${g.game_id}" hidden></div>
       <div class="${S.projByGame[g.game_id] ? "rot" : "roster"}" id="r-${g.game_id}" hidden></div></article>`;
   }).join("");
+  box.querySelectorAll("button[data-sim]").forEach((b) => b.addEventListener("click", () => {
+    const panel = document.getElementById("s-" + b.dataset.sim);
+    const open = panel.hidden;
+    panel.hidden = !open; b.setAttribute("aria-expanded", String(open)); b.textContent = open ? "Hide simulation" : "Show simulation";
+    const card = panel.closest(".game");
+    card.classList.toggle("open", open || !document.getElementById("r-" + b.dataset.sim).hidden);
+    if (open) panel.innerHTML = simPanel(S.simByGame[b.dataset.sim]);
+  }));
   box.querySelectorAll("button[data-roster]").forEach((b) => b.addEventListener("click", () => {
     const panel = document.getElementById("r-" + b.dataset.roster);
     const open = panel.hidden;
     const word = S.projByGame[b.dataset.roster] ? "rotations" : "rosters";
     panel.hidden = !open; b.setAttribute("aria-expanded", String(open)); b.textContent = open ? `Hide ${word}` : `Show ${word}`;
-    panel.closest(".game").classList.toggle("open", open);
+    panel.closest(".game").classList.toggle("open", open || !document.getElementById("s-" + b.dataset.roster).hidden);
     if (open) {
       const g = d.games.find((x) => x.game_id === b.dataset.roster);
       if (S.projByGame[g.game_id]) renderRotation(panel, g);
       else panel.innerHTML = [g.away_team_id, g.home_team_id].map(rosterBlock).join("");
     }
   }));
+}
+// ---------- simulations ----------
+const SCHED_LABEL = {
+  b2b: "back-to-back", rest2: "two days' rest", rest3plus: "three+ days' rest", three_in_four: "third game in four nights",
+  travel_1000mi: "travel", tz_west: "time zones crossed going west", tz_east: "time zones crossed going east",
+  visitor_altitude: "visitor at altitude", road_trip_long: "long road trip",
+};
+function spreadText(g) {
+  const m = g.margin;
+  if (Math.abs(m) < 0.25) return "Even";
+  const fav = m > 0 ? g.home_team_id : g.away_team_id;
+  return `${abbr(fav)} by ${fmt(Math.abs(m), 1)}`;
+}
+function simStrip(g) {
+  const s = S.simByGame[g.game_id];
+  if (!s || g.status === "final") return "";
+  const ph = s.home_win, pa = 1 - ph;
+  return `<div class="simstrip" title="${s.n_sims.toLocaleString()} simulated games">
+    <div class="winbar" role="img" aria-label="${abbr(g.away_team_id)} ${Math.round(100 * pa)}%, ${abbr(g.home_team_id)} ${Math.round(100 * ph)}%"><i style="width:${100 * pa}%"></i><b style="width:${100 * ph}%"></b></div>
+    <div class="simline"><span><strong>${abbr(g.away_team_id)} ${Math.round(100 * pa)}%</strong></span><span>Projected <strong>${fmt(s.away_pts, 0)}–${fmt(s.home_pts, 0)}</strong>, ${esc(spreadText(s))}, total <strong>${fmt(s.total, 1)}</strong></span><span><strong>${Math.round(100 * ph)}% ${abbr(g.home_team_id)}</strong></span></div></div>`;
+}
+function histSvg(s) {
+  const edges = S.sims.hist_edges, h = s.margin_hist, W = 400, H = 120, top = 8, base = 96;
+  const max = Math.max(...h, 0.001), bw = W / h.length;
+  const bars = h.map((v, i) => {
+    const x = i * bw, y = base - (base - top) * v / max, home = edges[i] >= 0;
+    return `<rect x="${(x + 0.5).toFixed(1)}" y="${y.toFixed(1)}" width="${(bw - 1).toFixed(1)}" height="${(base - y).toFixed(1)}" fill="${home ? "var(--accent)" : "var(--sim-away)"}"><title>${home ? abbr(s.home_team_id) : abbr(s.away_team_id)} by ${Math.abs(edges[i])} to ${Math.abs(edges[i + 1])}: ${(100 * v).toFixed(1)}%</title></rect>`;
+  }).join("");
+  const xAt = (m) => (m - edges[0]) / (edges[edges.length - 1] - edges[0]) * W;
+  const ticks = [-30, -15, 0, 15, 30].map((m) => `<line x1="${xAt(m)}" x2="${xAt(m)}" y1="${base}" y2="${base + 4}" stroke="var(--muted)"/><text x="${xAt(m)}" y="${base + 16}" text-anchor="middle">${m === 0 ? "0" : `${m < 0 ? abbr(s.away_team_id) : abbr(s.home_team_id)} +${Math.abs(m)}`}</text>`).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Spread of simulated final margins"><line x1="0" x2="${W}" y1="${base}" y2="${base}" stroke="var(--line)"/>${bars}${ticks}</svg>`;
+}
+function simPanel(s) {
+  if (!s) return "";
+  const inp = s.inputs || {};
+  const hm = abbr(s.home_team_id), aw = abbr(s.away_team_id);
+  const row = (label, v, unit = "pts / 100 poss to " + hm) => `<tr><td class="l name">${label}</td><td class="v ${v > 0.05 ? "up" : v < -0.05 ? "down" : ""}">${signed(v, 1)}</td><td class="l na">${unit}</td></tr>`;
+  const sched = Object.entries(inp.schedule_detail || {}).map(([k, v]) => row(`Schedule: ${SCHED_LABEL[k] ?? k}`, v)).join("");
+  const rh = inp.roster_home || [0, 0], ra = inp.roster_away || [0, 0];
+  const moves = `<table class="moves"><tbody>
+    ${row(inp.home_court ? "Home court" : "Neutral site", inp.home_court || 0)}
+    ${sched || `<tr><td class="l name">Schedule</td><td class="v">0.0</td><td class="l na">no rest or travel edge</td></tr>`}
+    ${row(`Who's playing: ${hm} offense`, rh[0], `pts / 100 for ${hm}`)}${row(`Who's playing: ${hm} defense`, rh[1], `pts / 100 kept off ${hm}`)}
+    ${row(`Who's playing: ${aw} offense`, ra[0], `pts / 100 for ${aw}`)}${row(`Who's playing: ${aw} defense`, ra[1], `pts / 100 kept off ${aw}`)}
+    <tr><td class="l name">Pace</td><td class="v">${fmt(inp.pace, 1)}</td><td class="l na">possessions each</td></tr></tbody></table>`;
+  const q = (o) => `${fmt(o["0.1"], 0)} to ${fmt(o["0.9"], 0)}`;
+  const mq = s.margin_q;
+  const players = (tid) => {
+    const t = s.teams[tid];
+    if (!t?.players?.length) return `<p class="meta">No minutes projection for this team yet.</p>`;
+    const sqo = t.shot_quality || {};
+    return `<table><thead><tr><th class="l">${esc(S.teamById[tid]?.name ?? abbr(tid))}</th><th>Min</th><th>PTS</th><th>REB</th><th>AST</th><th>3PM</th><th>FGA</th></tr></thead><tbody>${
+      t.players.filter((p) => p.min >= 5).map((p) => `<tr><td class="l name">${esc(p.name)}${p.rated ? "" : ` <span class="na" title="No rating yet: valued as a typical low-minute player">new</span>`}</td><td>${fmt(p.min, 0)}</td><td>${fmt(p.pts, 1)}</td><td>${fmt(p.reb, 1)}</td><td>${fmt(p.ast, 1)}</td><td>${fmt(p.fg3m, 1)}</td><td>${fmt(p.fga, 1)}</td></tr>`).join("")}</tbody></table>
+      <p class="meta">Expected ${fmt(t.expected.fga, 0)} shots, ${fmt(t.expected.fg3a, 0)} threes, ${fmt(t.expected.fta, 0)} free throws, ${fmt(t.expected.tov, 0)} turnovers. Shot quality ${pct(sqo.shot_quality)}% eFG at league make rates, shot-making ${signed(100 * (sqo.shot_making ?? 0), 1)}.</p>`;
+  };
+  return `<div><h4>How ${s.n_sims.toLocaleString()} simulated games ended</h4><div class="hist">${histSvg(s)}</div>
+      <p class="meta">${hm} wins ${Math.round(100 * s.home_win)}% of them. Middle 80% of margins: ${mq["0.1"] < 0 ? `${aw} by ${fmt(-mq["0.1"], 0)}` : `${hm} by ${fmt(mq["0.1"], 0)}`} to ${mq["0.9"] < 0 ? `${aw} by ${fmt(-mq["0.9"], 0)}` : `${hm} by ${fmt(mq["0.9"], 0)}`}. Total points ${q(s.total_q)}. Overtime in ${fmt(100 * s.overtime, 1)}%.</p></div>
+    <div><h4>What moves it</h4>${moves}<p class="meta">Starting point: each team's shot mix, make rates, turnovers, free throws and rebounding so far, shrunk by learned amounts and matched offense against defense. Who's playing compares tonight's expected minutes with the lineups those numbers came from, valued with the player ratings.</p></div>
+    <div>${players(s.away_team_id)}</div><div>${players(s.home_team_id)}</div>
+    <p class="meta" style="grid-column:1/-1">Player lines are averages. Each team's expected shots, free throws, rebounds, assists and turnovers are split among its players by minutes and usage, so when a player sits, his share goes to teammates in proportion to their own usage (or more than that for high-usage players, where the data says so).</p>`;
 }
 function rosterBlock(teamId) {
   const r = S.rosters?.teams?.[teamId];
@@ -656,6 +751,9 @@ const T_GROUPS = {
   scoring: [["ts", "TS%", 1, "pct"], ["three_rate", "3PA rate", 0, "pct"], ["opp_three_rate", "Opp 3PA rate", -1, "pct"],
     ["paint_pts_100", "Paint /100", 1, 1], ["second_chance_100", "2nd chance /100", 1, 1], ["fast_break_100", "Fast break /100", 1, 1],
     ["opp_paint_pts_100", "Opp paint /100", -1, 1], ["opp_second_chance_100", "Opp 2nd /100", -1, 1], ["opp_fast_break_100", "Opp fast break /100", -1, 1], ["fouls_100", "Fouls /100", -1, 1]],
+  shots: [["sq.off.shot_quality", "Shot quality", 1, "pct"], ["sq.off.shot_making", "Shot-making", 1, "pct"], ["sq.off.expected_efg", "Exp. eFG%", 1, "pct"], ["sq.raw_efg", "eFG% so far", 1, "pct"],
+    ["sq.off.share_rim", "Rim share", 0, "pct"], ["sq.off.share_ab3", "Above-break 3 share", 0, "pct"], ["sq.off.share_c3", "Corner 3 share", 0, "pct"],
+    ["sq.def.shot_quality", "Opp shot quality", -1, "pct"], ["sq.def.shot_making", "Opp shot-making", -1, "pct"], ["sq.def.expected_efg", "Opp exp. eFG%", -1, "pct"]],
   splits: [["home.net", "Home net", 1, 1], ["away.net", "Away net", 1, 1], ["home.pace", "Home pace", 0, 1], ["away.pace", "Away pace", 0, 1],
     ["last.5.net", "Last 5 net", 1, 1], ["last.10.net", "Last 10 net", 1, 1], ["last.20.net", "Last 20 net", 1, 1],
     ["last.10.pace", "Last 10 pace", 0, 1], ["vs_fast.pace", "Pace vs fast", 0, 1], ["vs_slow.pace", "Pace vs slow", 0, 1]],
@@ -668,7 +766,8 @@ function renderTeams() {
   document.querySelectorAll("#t-group button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.group === S.teamsView.group)));
   if (!rt || !rt.teams.length) { table.innerHTML = `<tbody><tr><td class="empty">No completed games for this season yet.</td></tr></tbody>`; $("#teams-model").textContent = ""; $("#team-detail").hidden = true; return; }
   const cols = T_GROUPS[S.teamsView.group];
-  const rows = rt.teams.map((t) => ({ ...t, record: `${t.wins}-${t.losses}` }));
+  const sqT = S.sq[season]?.teams ?? {};
+  const rows = rt.teams.map((t) => ({ ...t, record: `${t.wins}-${t.losses}`, sq: sqT[t.team_id] }));
   const ranks = {};
   for (const [k, , dir] of cols) {
     if (dir == null) continue;
@@ -699,6 +798,13 @@ function renderTeams() {
     tr.addEventListener("click", pick); tr.addEventListener("keydown", (e) => { if (e.key === "Enter") pick(); });
   });
   const m = rt.model ?? {};
+  if (S.teamsView.group === "shots") {
+    $("#teams-model").textContent = S.sq[season]
+      ? `Shot quality is the effective FG% a team's shot mix would produce at league make rates for each zone (league ${pct(S.sq[season].league_efg)}%). Shot-making is how far its make rates sit above or below that, after shrinking toward the league by amounts learned from data. Opponents' three-point percentage is mostly luck, so it is shrunk almost all the way.`
+      : (season === S.meta.season ? "Shot quality appears with the first simulation run." : "Shot quality is shown for the current season.");
+    if (S.teamsView.team) renderTeamDetail();
+    return;
+  }
   $("#teams-model").textContent = m.lambda_possessions
     ? `League average ${fmt(m.league_ortg)} points per 100 possessions. Home court worth ${fmt(m.home_edge_per_100)} per 100. Shrinkage: ${Math.round(m.lambda_possessions / 100)} games' worth of possessions, ${m.lambda_source}. Schedule is the average adjusted net rating of opponents faced. Possessions are a ${m.possessions_method}.`
     : "";
@@ -826,7 +932,7 @@ function rotationBlock(g, tid, t) {
     const lo = Math.max(0, p.p10), hi = Math.min(48, p.p90);
     const bar = sitting ? `<span class="na">sits</span>` :
       `<span class="range" title="If he plays: 80% of the time between ${fmt(lo, 0)} and ${fmt(hi, 0)} minutes"><i style="left:${lo / 48 * 100}%;width:${(hi - lo) / 48 * 100}%"></i><b style="left:${Math.min(m, 48) / 48 * 100}%"></b></span>`;
-    const ap = p.appear ? `Got into ${p.appear.played} of his last ${p.appear.eligible} healthy games (${esc(p.appear.source)})` : "";
+    const ap = p.appear ? `Chance he gets in: ${Math.round(100 * p.appear.p)}%. This season: ${p.appear.played} of ${p.appear.eligible} healthy games${p.appear.prev_eligible ? `; last season: ${p.appear.prev_played} of ${p.appear.prev_eligible}, worth at most 6 games of this season` : ""} (${esc(p.appear.source)})` : "";
     const st = p.status !== "available" && p.status !== "unknown" ? ` <span class="stat ${p.status}" title="${esc(p.reason ?? "")}">${STATUS_LABEL[p.status]}</span>` : "";
     return `<tr><td class="name" title="${ap}">${esc(p.name)}${p.projected_starter ? `<span class="sbadge" title="Projected starter">S</span>` : ""}${st}</td><td>${sitting ? "0" : fmt(m, 0)}</td><td>${bar}</td></tr>`;
   });
@@ -1052,12 +1158,45 @@ function renderModel() {
     ${rr ? `<p class="why">How often players with each status ended up playing, from stored reports (each player's last listing before tip-off):</p><div class="table-wrap"><table class="splits"><thead><tr><th class="l">Status</th><th>Listings</th><th>Played</th></tr></thead><tbody>${rr}</tbody></table></div>` : `<p class="why">Play rates by status appear once past reports are stored. They give each injury scenario its chance.</p>`}`;
 }
 
+function renderSimModel() {
+  const M = S.sims?.model;
+  const ms = $("#m-sims"), mf = $("#m-sched"), mu = $("#m-usage"), mr = $("#m-rates");
+  if (!M?.report) { [ms, mf, mu, mr].forEach((el) => (el.innerHTML = `<p class="na">Appears with the first simulation run.</p>`)); return; }
+  const r = M.report.scores, b = M.report.baseline, w = M.report.without_roster;
+  const line = (label, x, bold) => x ? `<tr><td class="l">${bold ? `<strong>${label}</strong>` : label}</td><td>${(100 * x.accuracy).toFixed(1)}%</td><td>${fmt(x.brier, 3)}</td><td>${fmt(x.log_loss, 3)}</td><td>${fmt(x.margin_rmse, 1)}</td><td>${fmt(x.total_rmse, 1)}</td></tr>` : "";
+  const cal = M.report.calibration.filter((c) => c.games >= 15).map((c) => `<tr class="cal-row"><td class="l">${Math.round(100 * c.from)}–${Math.round(100 * c.to)}%</td><td>${c.games}</td><td>${(100 * c.predicted).toFixed(0)}%</td><td>${(100 * c.actual).toFixed(0)}%</td></tr>`).join("");
+  ms.innerHTML = `<p class="why">Every game of ${S.sims.calibration_season} replayed in order, each predicted with only the games before it. Lower is better for Brier score, log loss and the misses in points.</p>
+    <div class="table-wrap"><table class="splits"><thead><tr><th class="l">Model</th><th>Winners</th><th>Brier</th><th>Log loss</th><th>Margin miss</th><th>Total miss</th></tr></thead><tbody>
+      ${line("Simulation (used)", r, true)}${line("Without who's playing", w)}${line("Home team by a few points", b)}</tbody></table></div>
+    <p class="why">Misses are root-mean-square, in points. The middle 80% of simulated margins held the real margin ${Math.round(100 * r.margin_80_coverage)}% of the time, and the totals range ${Math.round(100 * r.total_80_coverage)}%. Totals ran ${signed(-r.total_bias, 1)} points vs. real games on average.</p>
+    <div class="table-wrap"><table class="splits"><thead><tr><th class="l">Home win chance</th><th>Games</th><th>Predicted</th><th>Happened</th></tr></thead><tbody>${cal}</tbody></table></div>
+    <p class="why">Learned settings: a lead of 10 points costs the leader ${fmt(-10 * 100 * M.lead_slope_ppp, 1)} points per 100 possessions (leaders ease off, trailing teams push); team edges widened ${fmt(M.strength_scale ?? 1, 1)} times (each team rate is shrunk on its own, which over-shrinks teams as a whole); game-to-game form spread ${M.form_sd}; pace spread ${fmt(M.pace_sd, 1)} possessions; who's-playing effects counted at ${Math.round(100 * (M.roster_scale ?? 0))}%.</p>`;
+  const E = M.schedule;
+  mf.innerHTML = `<p class="why">Measured from ${E.games.toLocaleString()} games (${E.seasons.join(", ")}), with each team's strength in each season held fixed. Points per 100 possessions, for the team in that situation compared with its opponent, with standard errors. Effects are shrunk toward zero by an amount picked by leaving one season out at a time.</p>
+    <div class="table-wrap"><table class="splits"><thead><tr><th class="l">Situation</th><th>Effect</th><th>±</th></tr></thead><tbody>
+      <tr><td class="l">Home court</td><td>${signed(E.home_court, 2)}</td><td>${fmt(E.home_court_se, 2)}</td></tr>
+      ${Object.values(E.effects).map((e) => `<tr><td class="l">${esc(e.label)}</td><td>${signed(e.per100, 2)}</td><td>${fmt(e.se, 2)}</td></tr>`).join("")}</tbody></table></div>
+    <p class="why">On held-out seasons, adding these cut the squared error of predicted margins by ${fmt(E.holdout_gain, 2)} (out of about ${Math.round(E.holdout_mse["1000000000.0"] ?? 0)}). Small, but real: schedule spots move a game by a point or two, not more.</p>`;
+  const U = M.usage?.stats ?? {};
+  mu.innerHTML = Object.keys(U).length ? `<p class="why">Average miss per player-game, predicting each stat from the lineups of games the fit had not seen. "Usual share" keeps each player's normal share no matter who is beside him; the model splits each lineup's total by usage, so absences move shots to teammates. Power above 1 means high-usage teammates absorb more than their share.</p>
+    <div class="table-wrap"><table class="splits"><thead><tr><th class="l">Stat</th><th>Power</th><th>Model</th><th>Usual share</th><th>Top shooter out: model</th><th>Usual share</th></tr></thead><tbody>${
+      Object.values(U).map((u) => `<tr><td class="l">${esc(u.label)}</td><td>${u.g}</td><td>${fmt(u.rmse.all, 2)}</td><td>${fmt(u.rmse_fixed_share.all, 2)}</td><td>${fmt(u.rmse.star_out, 2)}</td><td>${fmt(u.rmse_fixed_share.star_out, 2)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="na">Not available yet.</p>`;
+  const T = M.team_rates;
+  const RL = { tov: "Turnovers per possession", fta: "Free throws per possession", ftp: "Free-throw %", and1: "And-ones per make", oreb: "Offensive rebound %", pace: "Pace", ast: "Assists per make",
+    share_rim: "Shot share: rim", share_paint: "Shot share: paint", share_mid: "Shot share: mid-range", share_c3: "Shot share: corner 3", share_ab3: "Shot share: above-the-break 3",
+    fg_rim: "Make %: rim", fg_paint: "Make %: paint", fg_mid: "Make %: mid-range", fg_c3: "Make %: corner 3", fg_ab3: "Make %: above-the-break 3" };
+  const keys = Object.keys(RL).filter((k) => T["off:" + k]);
+  mr.innerHTML = `<p class="why">How much evidence a team needs before its own numbers count as much as the league's (in the stat's units), learned by predicting the rest of a season from its start. Huge values mean the stat is mostly luck.</p>
+    <div class="table-wrap"><table class="splits"><thead><tr><th class="l">Rate</th><th>Offense</th><th>Defense</th></tr></thead><tbody>${
+      keys.map((k) => { const o = T["off:" + k], d = T["def:" + k]; const f = (x) => x ? (x.k >= 1e6 ? "all luck" : Math.round(x.k).toLocaleString()) : "—"; return `<tr><td class="l">${RL[k]}</td><td>${f(o)}</td><td>${f(d)}</td></tr>`; }).join("")}</tbody></table></div>`;
+}
+
 // ---------- navigation ----------
 function showView(name) {
   document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.view === name)));
   document.querySelectorAll(".view").forEach((v) => (v.hidden = v.id !== "view-" + name));
   if (name === "teams" && S.teamsView.team) setTimeout(() => echarts?.getInstanceByDom($("#trend"))?.resize(), 0);
-  if (name === "model") renderModel();
+  if (name === "model") { renderModel(); renderSimModel(); }
   history.replaceState(null, "", "#" + name);
 }
 
@@ -1092,13 +1231,16 @@ async function init() {
   S.players = pl.status === "fulfilled" ? pl.value : {};
   await Promise.all([loadSeasonFiles(S.meta.season), loadSeasonFiles(S.meta.previous_season)]);
   const extra = await Promise.allSettled([
-    getJSON("projections.json"),
+    getJSON("projections.json"), getJSON("sims.json"), getJSON(`teams/shot_quality_${S.meta.season}.json`),
     ...[S.meta.season, S.meta.previous_season].flatMap((sid) => [getJSON(`players/ratings_${sid}.json`), getJSON(`teams/lineups_${sid}.json`)]),
   ]);
   S.proj = extra[0].status === "fulfilled" ? extra[0].value : null;
   S.projByGame = Object.fromEntries((S.proj?.games ?? []).map((g) => [g.game_id, g]));
+  S.sims = extra[1].status === "fulfilled" ? extra[1].value : null;
+  S.simByGame = Object.fromEntries((S.sims?.games ?? []).map((g) => [g.game_id, g]));
+  if (extra[2].status === "fulfilled") S.sq[S.meta.season] = extra[2].value;
   [S.meta.season, S.meta.previous_season].forEach((sid, i) => {
-    const r = extra[1 + 2 * i], l = extra[2 + 2 * i];
+    const r = extra[3 + 2 * i], l = extra[4 + 2 * i];
     if (r.status === "fulfilled") S.pratings[sid] = r.value;
     if (l.status === "fulfilled") S.lineups[sid] = l.value;
   });
