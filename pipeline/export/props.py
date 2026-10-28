@@ -54,14 +54,28 @@ CREATE INDEX IF NOT EXISTS idx_odds_game ON odds_snapshots(game_id, fetched_at);
 
 
 def calibration(conn, season_m: str) -> dict:
-    key = f"props:{season_m}"
+    key = f"props-v2:{season_m}"
     row = conn.execute("SELECT payload FROM model_calibration WHERE key = ?", (key,)).fetchone()
     if row:
         return json.loads(row[0])
+    from ..models.game_model import prev_season
     from .build import player_logs
     logs = player_logs(conn, season_m)
-    disp = PM.fit_dispersion(logs)
-    cal = {"season": season_m, "dispersion": disp, "check": PM.calibration_check(logs, disp)}
+    prev = player_logs(conn, prev_season(season_m))
+    prev2 = player_logs(conn, prev_season(prev_season(season_m)))
+    if prev is None or prev.empty:
+        nb = PM.fit_dispersion(logs)
+        shapes = {s: {"shape": "nb", "k": v["k"], "n": v["n"]} for s, v in nb.items()}
+        check = PM.calibration_check(logs, shapes)
+        check["out_of_sample"] = False
+    else:
+        # shape picked on held-out games; live settings fitted on the latest full season
+        shapes = PM.fit_shapes(prev, logs)
+        # the check uses settings fitted only on earlier seasons, so it is out of sample
+        older = PM.fit_shapes(prev2, prev) if prev2 is not None and not prev2.empty else shapes
+        check = PM.calibration_check(logs, older)
+        check["out_of_sample"] = older is not shapes
+    cal = {"season": season_m, "shapes": shapes, "check": check}
     conn.execute("INSERT OR REPLACE INTO model_calibration (key, payload, created_at) VALUES (?, ?, ?)",
                  (key, json.dumps(cal), utc_now_iso()))
     conn.commit()
@@ -177,8 +191,8 @@ def compare(rows: list, inputs: dict, disp: dict) -> list:
             r.update({"model": None})
             out.append(r)
             continue
-        rate, k = x["rates"][r["stat"]], disp[r["stat"]]["k"]
-        po, pu, push = PM.over_under(r["line"], rate, k, x["min"], x["p10"], x["p90"])
+        rate, shape = x["rates"][r["stat"]], disp[r["stat"]]
+        po, pu, push = PM.over_under(r["line"], rate, shape, x["min"], x["p10"], x["p90"])
         dec_o, dec_u = PM.decimal(r["best_over"]["price"]), PM.decimal(r["best_under"]["price"])
         fair_o = r["fair_over"]
         # compare like with like: the model's over chance among results that are not a push
@@ -289,7 +303,7 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
         dbmod.mark_attempt(conn, "odds", False, "; ".join(pulled.get("errors", []))[:400])
     upcoming = [g["game_id"] for g in games]
     rows = market_table(_latest_odds(conn, upcoming))
-    rows = compare(rows, model_inputs(proj, sims), cal["dispersion"])
+    rows = compare(rows, model_inputs(proj, sims), cal["shapes"])
     if pulled["status"] == "stored":
         save_evals(conn, pulled["fetched_at"], rows)
     fetched = {r[0]: r[1] for r in conn.execute(
@@ -301,7 +315,7 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
         "pull": {k: v for k, v in pulled.items() if k != "errors"} | {"errors": pulled.get("errors", [])},
         "credits_remaining": state.get("remaining"), "last_pulls": state.get("pulls", [])[-6:],
         "odds_as_of": fetched, "props": rows,
-        "model": {"season": cal["season"], "dispersion": {s: {"k": v["k"], "n": v["n"]} for s, v in cal["dispersion"].items()},
+        "model": {"season": cal["season"], "shapes": cal["shapes"],
                   "check": cal["check"]},
         "track_record": track_record(conn, season),
         "budget": {"max_pulls_per_day": OA.MAX_PULLS_PER_DAY, "hours_between": OA.MIN_HOURS_BETWEEN,
