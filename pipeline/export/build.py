@@ -231,9 +231,12 @@ def export_all(conn, out_dir: Path = config.DATA_DIR) -> dict:
 
     seasons_out = {}
     team_tables = {}
+    current_logs = None
     prior_lambda = None
     for sid in (prev, season):
         logs = player_logs(conn, sid)
+        if sid == season:
+            current_logs = logs
         tg = load_team_games(conn, sid)
         table = team_table(tg, prior_lambda=prior_lambda)
         poss_src = conn.execute(
@@ -263,6 +266,13 @@ def export_all(conn, out_dir: Path = config.DATA_DIR) -> dict:
             "player_games": int(len(logs)),
             "team_games": int(len(tg) // 2),
         }
+
+    try:
+        from .daily import build as build_daily
+        _write(out_dir / "daily.json", build_daily(conn, season, current_logs))
+        summary["files"].append("daily.json")
+    except Exception:
+        log.exception("Daily leaderboard failed")
 
     phase2 = export_phase2(conn, out_dir, season, prev, team_tables)
     summary["files"] += phase2.pop("files")
