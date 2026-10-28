@@ -325,6 +325,7 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
                   "check": cal["check"]},
         "track_record": track_record(conn, season),
         "budget": {"max_pulls_per_day": OA.MAX_PULLS_PER_DAY, "hours_between": OA.MIN_HOURS_BETWEEN,
+                   "daily_cap": OA.DAILY_CREDIT_CAP,
                    "markets": len(OA.MARKETS), "reserve": OA.RESERVE_CREDITS},
     }
     write(out_dir / "props.json", payload)
