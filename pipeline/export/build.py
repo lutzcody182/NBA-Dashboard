@@ -378,6 +378,14 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
         out["errors"].append(f"simulations: {exc}")
         dbmod.mark_attempt(conn, "simulations", False, f"{exc}; {traceback.format_exc(limit=1)}")
     save_pregame_snapshot(conn, proj, sims)
+    try:
+        from . import props as props_export
+        out["props"] = props_export.export(conn, out_dir, season, games, proj, sims, _write)
+        out["files"].append("props.json")
+    except Exception as exc:
+        log.exception("Props failed")
+        out["errors"].append(f"props: {exc}")
+        dbmod.mark_attempt(conn, "odds", False, f"{exc}; {traceback.format_exc(limit=1)}")
     return out
 
 
