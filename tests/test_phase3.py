@@ -172,3 +172,41 @@ def test_injury_report_team_names_match_whole_words():
     assert _resolve_team("Charlotte Hornets", lookup) == 1610612766
     assert _resolve_team("Brooklyn Nets", lookup) == 1610612751
     assert _resolve_team("Portland Trail Blazers", lookup) == 1610612757
+
+
+# -- minutes: crowding and the chance of getting in ----------------------------------------
+
+def test_crowding_counts_teammates_usual_minutes():
+    from pipeline.models import minutes as M
+    rows = []
+    for i in range(1, 6):
+        for pid, mins in ((1, 34.0), (2, 30.0), (3, 12.0)):
+            rows.append({"game_id": f"g{i}", "game_date": f"2025-11-{i:02d}", "season_id": "2025-26", "team_id": 9,
+                         "player_id": pid, "min": mins, "started": 1, "pf": 2, "home": 1, "opp_id": 8, "margin": 0})
+    fb = M.FeatureBuilder(pd.DataFrame(rows))
+    r = fb.rows([M.Target("g6", "2025-11-06", "2025-26", 9, 8, 1, [1, 2, 3, 99])]).set_index("player_id")
+    assert r.loc[1, "role_rank"] == 1 and r.loc[3, "role_rank"] == 3 and r.loc[99, "role_rank"] == 4
+    assert r.loc[1, "crowd"] == pytest.approx(30 + 12 + 8)    # an unknown player counts as 8 minutes
+    assert r.loc[3, "usual"] == pytest.approx(12.0)
+
+
+def test_appearance_formula_learns_or_falls_back(tmp_path):
+    from pipeline import db
+    from pipeline.models import projections as P
+    conn = db.connect(tmp_path / "t.sqlite")
+    fit = P.fit_appearance(conn, "2026-27")
+    assert fit["m0"] == P.APPEAR_DEFAULT["m0"] and fit["rows"] == 0          # nothing to learn from yet
+    # a player who has got into 4 of 4 healthy games beats one who sat 3 of 4, whatever the prior
+    prm = {"m0": 0.7, "s": 1.0, "w": 0.1, "cap": 4.0}
+    assert P._p_hat(4, 4, 0, 0, prm) > P._p_hat(1, 4, 0, 0, prm)
+    assert P._p_hat(0, 0, 0, 0, prm) == pytest.approx(0.7)
+    assert P._p_hat(0, 0, 60, 60, prm) > P._p_hat(0, 0, 10, 60, prm)
+
+
+def test_allocation_hits_team_total():
+    from pipeline.models.minutes_eval import allocate
+    a = allocate(np.array([34.0, 30, 28, 20, 15, 10, 5]), np.ones(7), 240.0)
+    assert a.sum() == pytest.approx(240.0) and a.max() <= 48 + 1e-9
+    deep = np.array([34.0, 32, 30, 28, 26, 22, 18, 15, 12, 10, 8, 6, 5])
+    c, b = allocate(deep, np.ones(13), 240.0), allocate(deep, np.ones(13), 240.0, power=1.5)
+    assert b.sum() == pytest.approx(240.0) and b[0] > c[0] and b[-1] < c[-1]
