@@ -27,7 +27,8 @@ import pandas as pd
 # them: blowouts send in the deep bench, so using it would leak the result.)
 FEATURES = ["m_l1", "m_l3", "m_l5", "m_l10", "m_season", "m_prev", "gp_season", "start_l1", "start_rate_l10",
             "days_since", "missed_team_games", "vacated", "vacated_share", "returning",
-            "exp_margin_abs", "exp_margin_x_starter", "pf36", "team_rest", "home", "new_team"]
+            "exp_margin_abs", "exp_margin_x_starter", "pf36", "team_rest", "home", "new_team",
+            "crowd", "role_rank", "usual"]
 
 
 def history(conn, seasons) -> pd.DataFrame:
@@ -124,6 +125,20 @@ class FeatureBuilder:
                 team_rest = int(min(day - t["day"][n_team - 1], 4))
             exp_margin = (self._strength(tg.team_id, day, tg.season_id)
                           - self._strength(tg.opp_id, day, tg.season_id) + (2.5 if tg.home else -2.5))
+            # Crowding: how many minutes the rest of tonight's group has been playing. A team
+            # that has added several players used to big minutes elsewhere can't give them all
+            # their old minutes, and the model learns how that shakes out.
+            usual = {}
+            for p in tg.players:
+                ph, k = hist_cache[p]
+                if ph is None or k == 0:
+                    usual[p] = 8.0
+                else:
+                    mm, ss = ph["min"][:k], ph["season"][:k]
+                    cur_m = mm[ss == tg.season_id]
+                    usual[p] = float(cur_m[-10:].mean()) if len(cur_m) >= 3 else float(mm[-10:].mean())
+            ranked = sorted(tg.players, key=lambda q: -usual[q])
+            rank_of = {q: i + 1 for i, q in enumerate(ranked)}
             for p in tg.players:
                 ph, k = hist_cache[p]
                 r = {"game_id": tg.game_id, "game_date": tg.game_date, "team_id": tg.team_id, "player_id": p,
@@ -156,6 +171,10 @@ class FeatureBuilder:
                         r["missed_team_games"] = 0
                     m30, pf30 = mins[-30:], ph["pf"][max(0, k - 30):k]
                     r["pf36"] = 36 * pf30.sum() / m30.sum() if m30.sum() else np.nan
+                others = sorted((usual[q] for q in tg.players if q != p), reverse=True)[:8]
+                r["crowd"] = float(sum(others))
+                r["role_rank"] = rank_of[p]
+                r["usual"] = usual[p]
                 r["vacated_share"] = vacated * (0 if np.isnan(r["m_l10"]) else r["m_l10"]) / 240.0
                 r["exp_margin_x_starter"] = r["exp_margin_abs"] * r["start_rate_l10"]
                 out.append(r)
