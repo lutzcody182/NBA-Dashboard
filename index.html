@@ -328,6 +328,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
       <label class="ctl">Player<input id="pr-search" type="search" placeholder="Name" style="width:150px"></label>
       <label class="ctl">Min. difference (pts)<input id="pr-edge" type="number" min="0" max="50" value="0"></label>
       <label class="ctl">Min. books<input id="pr-books" type="number" min="1" max="20" value="1"></label>
+      <label class="ctl" style="flex-direction:row;align-items:center;gap:6px;padding-bottom:8px"><input id="pr-hist" type="checkbox" checked style="width:auto"> Hide players with fewer than 5 games of history</label>
     </div>
     <div class="table-wrap"><table id="pr-table"></table></div>
     <p class="count" id="pr-count"></p>
@@ -848,6 +849,7 @@ function renderProps() {
   ].join("");
   const gid = $("#pr-game").value, stat = $("#pr-stat").value, q = $("#pr-search").value.trim().toLowerCase();
   const minEdge = (Number($("#pr-edge").value) || 0) / 100, minBooks = Number($("#pr-books").value) || 1;
+  const hideNew = $("#pr-hist").checked;
   let rows = (d.props ?? []).map((p) => {
     p.name = S.players[p.player_id]?.name ?? (S.simByGame[p.game_id] ? null : null) ?? `#${p.player_id}`;
     for (const t of Object.values(S.projByGame[p.game_id]?.teams ?? {})) { const x = (t.players ?? []).find((y) => y.player_id === p.player_id); if (x) p.name = x.name; }
@@ -858,7 +860,9 @@ function renderProps() {
     return p;
   });
   rows = rows.filter((p) => (!gid || p.game_id === gid) && (!stat || p.stat === stat) && (!q || p.name.toLowerCase().includes(q))
-    && p.books.length >= minBooks && (minEdge === 0 || (p.absedge ?? 0) >= minEdge));
+    && p.books.length >= minBooks && (minEdge === 0 || (p.absedge ?? 0) >= minEdge)
+    && (!hideNew || !p.model || p.model.games == null || p.model.games >= 5));
+  const hidden = (d.props ?? []).filter((p) => p.model?.games != null && p.model.games < 5).length;
   const { sort, dir } = S.propsView;
   const key = { absedge: (p) => p.absedge, edge: (p) => p.edge, line: (p) => p.line, fair: (p) => p.fair_over, model: (p) => p.mpo,
     mean: (p) => p.model?.mean, books: (p) => p.books.length, ev: (p) => p.bestev, name: (p) => p.name }[sort] ?? ((p) => p.absedge);
@@ -877,7 +881,7 @@ function renderProps() {
     const m = p.model;
     const ecls = p.edge == null ? "" : Math.abs(p.edge) < 0.03 ? "" : p.edge > 0 ? "pos" : "neg";
     const side = m ? (m.ev_over >= m.ev_under ? "over" : "under") : null;
-    const main = `<tr class="main" data-id="${esc(id)}"><td class="name">${esc(p.name)}<small>${abbr(p.team)}${m?.status && !["available", "unknown"].includes(m.status) ? " " + esc(m.status) : ""}</small></td>
+    const main = `<tr class="main" data-id="${esc(id)}"><td class="name">${esc(p.name)}<small>${abbr(p.team)}${m?.status && !["available", "unknown"].includes(m.status) ? " " + esc(m.status) : ""}${m?.games != null && m.games < 5 ? ` <span class="flag down" title="The minutes model has only ${m.games} games of this player to go on (this season and last), so his minutes are a guess">${m.games} games</span>` : ""}</small></td>
       <td class="l">${esc(gameLabel(p.game_id))}</td><td class="l">${esc(d.stat_labels?.[p.stat] ?? p.stat)}</td><td>${fmt(p.line)}</td>
       <td>${pct(p.fair_over)}%</td><td>${m ? pct(p.mpo) + "%" : "—"}</td>
       <td class="edge ${ecls}">${p.edge == null ? "—" : signed(100 * p.edge, 1)}</td><td>${m ? fmt(m.mean) : "—"}</td>
@@ -900,7 +904,7 @@ function renderProps() {
   table.querySelectorAll("tr.main").forEach((tr) => tr.addEventListener("click", () => {
     S.propsView.open = S.propsView.open === tr.dataset.id ? null : tr.dataset.id; renderProps();
   }));
-  $("#pr-count").textContent = `${rows.length} props${rows.length > shown.length ? `, showing ${shown.length}` : ""}. Sorted by the size of the difference by default; click a row for every book's prices.`;
+  $("#pr-count").textContent = `${rows.length} props${rows.length > shown.length ? `, showing ${shown.length}` : ""}${hideNew && hidden ? ` (${hidden} hidden for players with under 5 games of history: rookies and players back from long absences, whose minutes the model can only guess)` : ""}. Sorted by the size of the difference by default; click a row for every book's prices.`;
   renderPropsTrack(); renderPropsModel();
 }
 function renderPropsTrack() {
@@ -1588,7 +1592,7 @@ async function init() {
   const prGames = [...new Set((S.props?.props ?? []).map((p) => p.game_id))];
   $("#pr-game").insertAdjacentHTML("beforeend", prGames.map((g) => `<option value="${esc(g)}">${esc(gameLabel(g))}</option>`).join(""));
   $("#pr-stat").insertAdjacentHTML("beforeend", Object.entries(S.props?.stat_labels ?? {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""));
-  ["#pr-game", "#pr-stat", "#pr-search", "#pr-edge", "#pr-books"].forEach((sel) => $(sel).addEventListener("input", () => { S.propsView.open = null; renderProps(); }));
+  ["#pr-game", "#pr-stat", "#pr-search", "#pr-edge", "#pr-books", "#pr-hist"].forEach((sel) => $(sel).addEventListener("input", () => { S.propsView.open = null; renderProps(); }));
   if (!S.logs[S.meta.season]?.length && seasons.includes(S.meta.previous_season)) $("#f-season").value = S.meta.previous_season;
 
   renderFreshness(); renderRail(); renderGames(); renderLeaders(); renderTeams(); renderPlayers();
