@@ -44,10 +44,15 @@ def test_pull_budget():
     tip = [NOW + timedelta(hours=3)]
     assert OA.should_pull({"pulls": []}, NOW, tip, "2026-10-28")[0]
     assert not OA.should_pull({"pulls": []}, NOW, [NOW + timedelta(hours=20)], "2026-10-28")[0]
-    recent = {"pulls": [{"at": "2026-10-28T14:30:00Z", "et_day": "2026-10-28"}]}
+    recent = {"pulls": [{"at": "2026-10-28T15:30:00Z", "et_day": "2026-10-28"}]}
     assert not OA.should_pull(recent, NOW, tip, "2026-10-28")[0]
-    three = {"pulls": [{"at": f"2026-10-28T0{h}:00:00Z", "et_day": "2026-10-28"} for h in (1, 5, 9)]}
-    assert not OA.should_pull(three, NOW, tip, "2026-10-28")[0]
+    hour_ago = {"pulls": [{"at": "2026-10-28T14:30:00Z", "et_day": "2026-10-28", "cost": 100}]}
+    assert OA.should_pull(hour_ago, NOW, tip, "2026-10-28")[0]
+    spent = {"pulls": [{"at": f"2026-10-28T0{h}:00:00Z", "et_day": "2026-10-28", "cost": 150} for h in (1, 5, 9)]}
+    assert not OA.should_pull(spent, NOW, tip, "2026-10-28")[0]          # daily budget used
+    # with budget for only one more pull and 6 hours to tip, it waits rather than spending it now
+    late = {"pulls": [{"at": "2026-10-28T14:00:00Z", "et_day": "2026-10-28", "cost": OA.DAILY_CREDIT_CAP - 20}]}
+    assert not OA.should_pull(late, NOW, [NOW + timedelta(hours=6)], "2026-10-28")[0]
     assert not OA.should_pull({"pulls": [], "remaining": 100}, NOW, tip, "2026-10-28")[0]
 
 
