@@ -104,7 +104,7 @@ def minutes_calibration(conn, season_m: str) -> dict:
       * minutes when a player gets in (the model's main job)
       * the full game-day pipeline, with no knowledge of who gets in
     """
-    key = f"minutes:{season_m}"
+    key = f"minutes-v2:{season_m}"
     row = conn.execute("SELECT payload FROM model_calibration WHERE key = ?", (key,)).fetchone()
     if row:
         return json.loads(row[0])
@@ -161,8 +161,10 @@ def minutes_calibration(conn, season_m: str) -> dict:
         LE, LA, LB = np.concatenate(LE), np.concatenate(LA), np.concatenate(LB)
         live = {"model": float(np.mean(np.abs(LA - LE))), "last10_avg": float(np.mean(np.abs(LA - LB))),
                 "rows": int(len(LE)), "bias": float(np.mean(LA - LE))}
+    early = _early_season_test(hist, fb, prev_rows, season_m, y, total) if has_prev else None
     out = {
         "season": season_m, "total_minutes": total, "intervals": tmp.resid_q,
+        "early_season": early,
         "backtest": windows,
         "overall": {"model": float(np.mean(np.abs(Y - P))), "season_avg": float(np.mean(np.abs(Y - B))),
                     "last5": float(np.mean(np.abs(Y - L5))), "rows": int(len(P)),
@@ -178,6 +180,22 @@ def minutes_calibration(conn, season_m: str) -> dict:
                  (key, json.dumps(out, default=_np), out["created_at"]))
     conn.commit()
     return out
+
+
+def _early_season_test(hist, fb, prev_rows, season_m, y, total):
+    """First month of season_m replayed as game days, with a model trained only on earlier seasons."""
+    from . import minutes_eval as E
+    m = M.MinutesModel().fit(M.fill(prev_rows), y(prev_rows), total)
+    recs = E.early_games(hist, season_m)
+    if not recs:
+        return None
+    model_exp, base_exp = [], []
+    for r in recs:
+        rows = fb.rows([r.target])
+        p_in = np.array([r.odds[q] for q in rows["player_id"]])
+        model_exp.append(dict(zip(rows["player_id"], M.scale_to_team(rows, m.predict_raw(M.fill(rows)) * p_in, total))))
+        base_exp.append(dict(zip(rows["player_id"], M.scale_to_team(rows, M.baseline(rows) * p_in, total))))
+    return {"days": E.EARLY_DAYS, "model": E.score(recs, model_exp), "recent_average": E.score(recs, base_exp)}
 
 
 def train_minutes_model(conn, season: str):
@@ -206,9 +224,88 @@ def _is_coach_dnp(reason: str) -> bool:
 
 PREV_GAME_WEIGHT = 0.5
 PREV_GAMES_CAP = 6
+APPEAR_DEFAULT = {"m0": 0.5, "s": 2.0, "w": PREV_GAME_WEIGHT, "cap": PREV_GAMES_CAP,
+                  "source": "default (not enough of this season's game-day rosters yet)"}
+MIN_APPEAR_ROWS = 300
 
 
-def appearance_odds(conn, team_id: int, season: str, players) -> dict:
+def _this_season_record(rows):
+    """(played, eligible) from a player's box-score rows, newest first: healthy games only, last 10."""
+    played = eligible = 0
+    for secs, reason in rows:
+        if secs and secs > 0:
+            played, eligible = played + 1, eligible + 1
+        elif _is_coach_dnp(reason):
+            eligible += 1
+        if eligible >= 10:
+            break
+    return played, eligible
+
+
+def _prev_record(conn, p, team_id, prev, cache):
+    key = (p, team_id)
+    if key not in cache:
+        pp, pe, src = _last_season_odds(conn, p, team_id, prev)
+        if pe == 0:
+            pp, pe, src = _last_season_any_team(conn, p, prev)
+        cache[key] = (pp, pe, src)
+    return cache[key]
+
+
+def _p_hat(k, n, pp, pe, prm):
+    w = min(prm["w"], prm["cap"] / pe) if pe else 0.0
+    return (k + w * pp + prm["s"] * prm["m0"]) / (n + w * pe + prm["s"])
+
+
+def fit_appearance(conn, season: str) -> dict:
+    """Learn the chance-of-getting-in formula from this season's game-day rosters.
+
+    Every healthy, dressed player-game this season (box-score rows: played, or
+    'coach's decision') is predicted from the games before it, exactly as the
+    live code would have: the starting guess (m0, worth s games), last season's
+    weight per game (w) and its cap in games (cap) are picked to make those
+    predictions as likely as possible.
+    """
+    prev = prev_season(season)
+    rows = conn.execute(
+        """SELECT p.player_id, p.team_id, p.seconds, p.dnp_reason, g.game_date, g.game_id FROM player_game_stats p
+           JOIN games g ON g.game_id = p.game_id WHERE g.season_id = ? AND g.status = 'final'
+             AND g.season_type = 'regular' ORDER BY g.game_date, g.game_id""", (season,)).fetchall()
+    hist, obs, cache = {}, [], {}
+    for pid, tid, secs, reason, _, _ in rows:
+        played_now = bool(secs and secs > 0)
+        if not played_now and not _is_coach_dnp(reason):
+            continue
+        before = hist.setdefault((pid, tid), [])
+        k, n = _this_season_record(list(reversed(before)))
+        pp, pe, _ = _prev_record(conn, pid, tid, prev, cache)
+        obs.append((k, n, pp, pe, played_now))
+        before.append((secs, reason))
+    if len(obs) < MIN_APPEAR_ROWS:
+        return {**APPEAR_DEFAULT, "rows": len(obs)}
+    o = np.array(obs, dtype=float)
+
+    def loglik(prm):
+        w = np.where(o[:, 3] > 0, np.minimum(prm["w"], prm["cap"] / np.maximum(o[:, 3], 1)), 0.0)
+        p = (o[:, 0] + w * o[:, 2] + prm["s"] * prm["m0"]) / (o[:, 1] + w * o[:, 3] + prm["s"])
+        p = np.clip(p, 1e-4, 1 - 1e-4)
+        return float(np.mean(o[:, 4] * np.log(p) + (1 - o[:, 4]) * np.log(1 - p)))
+
+    best = None
+    for m0 in (0.4, 0.5, 0.6, 0.7, 0.8):
+        for s_ in (1.0, 2.0, 4.0, 8.0):
+            for w in (0.1, 0.25, 0.5, 1.0):
+                for cap in (2.0, 4.0, 6.0, 12.0, 25.0):
+                    prm = {"m0": m0, "s": s_, "w": w, "cap": cap}
+                    ll = loglik(prm)
+                    if best is None or ll > best[0]:
+                        best = (ll, prm)
+    return {**best[1], "rows": len(obs), "log_loss": -best[0], "log_loss_default": -loglik(APPEAR_DEFAULT),
+            "played_share": float(o[:, 4].mean()),
+            "source": f"learned from {len(obs):,} healthy player-games this season"}
+
+
+def appearance_odds(conn, team_id: int, season: str, players, params: dict = None, cache: dict = None) -> dict:
     """How often each player gets into games when he is healthy.
 
     This season: his last 10 healthy games with this team, from box scores
@@ -221,28 +318,19 @@ def appearance_odds(conn, team_id: int, season: str, players) -> dict:
     """
     out = {}
     prev = prev_season(season)
+    prm = params or APPEAR_DEFAULT
+    cache = {} if cache is None else cache
     for p in players:
         rows = conn.execute(
             """SELECT p.seconds, p.dnp_reason FROM player_game_stats p JOIN games g ON g.game_id = p.game_id
                WHERE p.player_id = ? AND p.team_id = ? AND g.season_id = ? AND g.status = 'final'
                  AND g.season_type = 'regular' ORDER BY g.game_date DESC LIMIT 25""",
             (p, team_id, season)).fetchall()
-        played = eligible = 0
-        for secs, reason in rows:
-            if secs and secs > 0:
-                played, eligible = played + 1, eligible + 1
-            elif _is_coach_dnp(reason):
-                eligible += 1
-            if eligible >= 10:
-                break
-        # Last season's record is the prior: each of those games counts PREV_GAME_WEIGHT of a game
-        # this season, up to PREV_GAMES_CAP games' worth. Coaches' choices this season (often a new
-        # team and role) take over within a couple of weeks.
-        pp, pe, psrc = _last_season_odds(conn, p, team_id, prev)
-        if pe == 0:
-            pp, pe, psrc = _last_season_any_team(conn, p, prev)
-        w = min(PREV_GAME_WEIGHT, PREV_GAMES_CAP / pe) if pe else 0.0
-        p_hat = (played + w * pp + 1) / (eligible + w * pe + 2)
+        played, eligible = _this_season_record(rows)
+        # Last season's record is the prior, each game worth w of a game this season up to `cap`
+        # games' worth, on top of a starting guess; all learned from this season's rosters.
+        pp, pe, psrc = _prev_record(conn, p, team_id, prev, cache)
+        p_hat = _p_hat(played, eligible, pp, pe, prm)
         source = "this season" + (f" + {psrc}" if pe else "") if eligible else (psrc if pe else "no record")
         out[p] = {"p": p_hat, "played": played, "eligible": eligible, "prev_played": pp, "prev_eligible": pe,
                   "source": source}
@@ -383,6 +471,8 @@ def project_games(conn, season: str, games: list, rates: dict) -> dict:
     if cal and cal.get("intervals"):
         model.resid_q = [tuple(x) for x in cal["intervals"]]
     rep = latest_report(conn)
+    appear = fit_appearance(conn, season)
+    prev_cache = {}
     out = []
     for g in games:
         teams = {}
@@ -394,7 +484,7 @@ def project_games(conn, season: str, games: list, rates: dict) -> dict:
             out_ids = {p for p, e in listed.items() if e["status"] == "out"}
             uncertain = [p for p, e in listed.items() if e["status"] in ("questionable", "doubtful") and p in roster]
             candidates = [p for p in roster if p not in out_ids]
-            odds = appearance_odds(conn, team_id, season, candidates)
+            odds = appearance_odds(conn, team_id, season, candidates, appear, prev_cache)
             base = _project(model, fb, g, team_id, opp_id, home, season, set(candidates), odds)
             # limit scenarios to the uncertain players with the most minutes at stake
             uncertain.sort(key=lambda p: -base.get(p, {}).get("min", 0))
@@ -452,4 +542,5 @@ def project_games(conn, season: str, games: list, rates: dict) -> dict:
         "play_rates": rates,
         "minutes_model": {k: v for k, v in (cal or {}).items() if k != "intervals"},
         "team_minutes": model.total,
+        "appearance_model": appear,
     }
