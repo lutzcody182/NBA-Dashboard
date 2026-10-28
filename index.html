@@ -932,7 +932,7 @@ function rotationBlock(g, tid, t) {
     const lo = Math.max(0, p.p10), hi = Math.min(48, p.p90);
     const bar = sitting ? `<span class="na">sits</span>` :
       `<span class="range" title="If he plays: 80% of the time between ${fmt(lo, 0)} and ${fmt(hi, 0)} minutes"><i style="left:${lo / 48 * 100}%;width:${(hi - lo) / 48 * 100}%"></i><b style="left:${Math.min(m, 48) / 48 * 100}%"></b></span>`;
-    const ap = p.appear ? `Chance he gets in: ${Math.round(100 * p.appear.p)}%. This season: ${p.appear.played} of ${p.appear.eligible} healthy games${p.appear.prev_eligible ? `; last season: ${p.appear.prev_played} of ${p.appear.prev_eligible}, worth at most 6 games of this season` : ""} (${esc(p.appear.source)})` : "";
+    const ap = p.appear ? `Chance he gets in: ${Math.round(100 * p.appear.p)}%. This season: ${p.appear.played} of ${p.appear.eligible} healthy games${p.appear.prev_eligible ? `; last season: ${p.appear.prev_played} of ${p.appear.prev_eligible}, counted at a learned weight` : ""} (${esc(p.appear.source)})` : "";
     const st = p.status !== "available" && p.status !== "unknown" ? ` <span class="stat ${p.status}" title="${esc(p.reason ?? "")}">${STATUS_LABEL[p.status]}</span>` : "";
     return `<tr><td class="name" title="${ap}">${esc(p.name)}${p.projected_starter ? `<span class="sbadge" title="Projected starter">S</span>` : ""}${st}</td><td>${sitting ? "0" : fmt(m, 0)}</td><td>${bar}</td></tr>`;
   });
@@ -1120,6 +1120,18 @@ function renderLineups(season, id) {
 }
 
 // ---------- model ----------
+function earlyMinutes(e) {
+  if (!e) return "";
+  const r = (x) => `<td>${fmt(x.mae, 2)}</td><td>${fmt(x.top5_mae, 2)}</td><td>${signed(x.top5_bias, 1)}</td><td>${fmt(x.new_team_mae, 2)}</td>`;
+  return `<p class="why">The first ${e.days} days of the season, the hardest stretch, replayed as game days: whole rosters, chances of getting in, and the team's 240 minutes to share. Trained only on earlier seasons.</p>
+    <div class="table-wrap"><table class="splits"><thead><tr><th class="l">Projection</th><th>Miss, everyone</th><th>Miss, top 5 roles</th><th title="Positive: top players played more than projected">Top 5 under by</th><th>Miss, new to team</th></tr></thead><tbody>
+      <tr><td class="l"><strong>Model</strong></td>${r(e.model)}</tr><tr><td class="l">Recent average</td>${r(e.recent_average)}</tr></tbody></table></div>`;
+}
+function appearModel(a) {
+  if (!a) return "";
+  if (a.log_loss == null) return `<p class="why">Chance of getting in: ${esc(a.source)}.</p>`;
+  return `<p class="why">Chance of getting in, ${esc(a.source)}: a player with no record starts at ${Math.round(100 * a.m0)}%, each game last season counts as ${a.w} of a game this season (at most ${a.cap} games' worth). Healthy, dressed players have got in ${Math.round(100 * a.played_share)}% of the time. Log loss ${fmt(a.log_loss, 3)} against ${fmt(a.log_loss_default, 3)} for a fixed 50-50 starting guess.</p>`;
+}
 function renderModel() {
   const R = S.pratings[S.meta.season]?.players?.length ? S.pratings[S.meta.season] : S.pratings[S.meta.previous_season];
   const mr = $("#m-ratings");
@@ -1146,6 +1158,7 @@ function renderModel() {
       <div class="table-wrap"><table class="splits"><thead><tr><th class="l">Window</th><th>Model</th><th>Season average</th><th>Last 5 games</th><th title="Full game-day pipeline, not knowing who gets in">Game-day replay</th></tr></thead><tbody>${
         mmod.backtest.map((w) => `<tr><td class="l">${fmtDay(w.from)} to ${fmtDay(w.to)}</td><td>${fmt(w.model, 2)}</td><td>${fmt(w.season_avg, 2)}</td><td>${fmt(w.last5, 2)}</td><td>${fmt(w.live_model, 2)}</td></tr>`).join("")}
         <tr><td class="l"><strong>Whole season</strong></td><td><strong>${fmt(o.model, 2)}</strong></td><td>${fmt(o.season_avg, 2)}</td><td>${fmt(o.last5, 2)}</td><td>${fmt(live?.model, 2)}</td></tr></tbody></table></div>
+      ${earlyMinutes(mmod.early_season)}${appearModel(S.proj?.appearance_model)}
       <p class="why">The 80% range held the real minutes ${Math.round(100 * o.band_coverage)}% of the time. Average bias ${signed(o.bias, 2)} minutes. In the game-day replay, which includes bench players who never got in, the model missed by ${fmt(live?.model, 2)} minutes against ${fmt(live?.last10_avg, 2)} for a plain last-10-games average. ${esc(mmod.assumption ?? "")}</p>`;
   } else mm.innerHTML = `<p class="na">Appears with the first game-day projections.</p>`;
 
