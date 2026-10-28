@@ -22,7 +22,15 @@ MARKETS = {
     "player_points_rebounds_assists": "pra", "player_points_rebounds": "pr", "player_points_assists": "pa",
     "player_rebounds_assists": "ra",
 }
+GAME_MARKETS = ("h2h", "spreads", "totals")
 REGION = "us"
+# State-licensed US sportsbooks. The "us" region also carries offshore books
+# (Bovada, BetOnline, MyBookie, LowVig, BetUS); those are stored but never used.
+LEGAL_BOOKS = {
+    "draftkings", "fanduel", "betmgm", "williamhill_us", "caesars", "espnbet", "betrivers", "fanatics",
+    "hardrockbet", "ballybet", "betparx", "pointsbetus", "unibet_us", "superbook", "wynnbet", "windcreek",
+    "betway", "tipico", "sisportsbook", "circasports", "twinspires", "foxbet", "barstool",
+}
 MAX_PULLS_PER_DAY = 3
 MIN_HOURS_BETWEEN = 3.0
 LOOKAHEAD_HOURS = 8
@@ -133,6 +141,35 @@ def parse_props(payload: dict, roster: dict):
     return rows, sorted(n for n in unmatched if n)
 
 
+def parse_game_lines(events: list, games: list, teams: dict) -> list:
+    """Moneyline, spread and total rows from the /odds response, keyed to our games."""
+    rows = []
+    for ev in events:
+        g = match_event(ev, games, teams)
+        if g is None:
+            continue
+        home, away = norm_name(ev.get("home_team")), norm_name(ev.get("away_team"))
+        for bk in ev.get("bookmakers", []):
+            for mk in bk.get("markets", []):
+                if mk.get("key") not in GAME_MARKETS:
+                    continue
+                for o in mk.get("outcomes", []):
+                    nm = norm_name(o.get("name"))
+                    if mk["key"] == "totals":
+                        side = nm if nm in ("over", "under") else None
+                    else:
+                        side = "home" if nm == home else "away" if nm == away else None
+                    if side is None or o.get("price") is None:
+                        continue
+                    line = o.get("point")
+                    if mk["key"] != "h2h" and line is None:
+                        continue
+                    rows.append({"game_id": g["game_id"], "book": bk.get("key"), "market": mk["key"], "side": side,
+                                 "line": float(line) if line is not None else None,
+                                 "price": int(round(float(o["price"])))})
+    return rows
+
+
 def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = None, force: bool = False) -> dict:
     """Fetch prop odds for upcoming games and store them in odds_snapshots.
 
@@ -194,11 +231,31 @@ def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = N
             [(g["game_id"], fetched_at, r["book"], r["market"], r["player_id"], r["side"], r["line"], r["price"], SOURCE)
              for r in rows])
         stored += len(rows)
+    # game lines for the same games: one call, one credit per market
+    game_rows = 0
+    soon = [g for g in upcoming if _parse(g["tip_utc"]) <= now + timedelta(hours=LOOKAHEAD_HOURS)]
+    if soon and not (errors and not stored):
+        try:
+            evs, rem = _get("/odds", key, {"regions": REGION, "markets": ",".join(GAME_MARKETS),
+                                           "oddsFormat": "american", "dateFormat": "iso"})
+            if rem is not None:
+                remaining = rem
+            gl = parse_game_lines(evs, soon, teams)
+            # game markets have no player (player_id NULL); the moneyline is stored at line 0
+            conn.executemany(
+                """INSERT OR REPLACE INTO odds_snapshots
+                   (game_id, fetched_at, book, market, player_id, side, line, price_american, is_closing, source)
+                   VALUES (?, ?, ?, ?, NULL, ?, ?, ?, 0, ?)""",
+                [(r["game_id"], fetched_at, r["book"], r["market"], r["side"],
+                  r["line"] if r["line"] is not None else 0.0, r["price"], SOURCE) for r in gl])
+            game_rows = len(gl)
+        except Exception as exc:
+            errors.append(f"game lines: {exc}")
     conn.commit()
     state["pulls"] = state.get("pulls", [])[-30:]
-    state["pulls"].append({"at": fetched_at, "et_day": et_day, "games": matched, "rows": stored})
+    state["pulls"].append({"at": fetched_at, "et_day": et_day, "games": matched, "rows": stored, "game_rows": game_rows})
     state["remaining"] = remaining
     _save_state(conn, state, fetched_at)
     return {"status": "error" if errors and not stored else "stored", "fetched_at": fetched_at, "games": matched,
-            "rows": stored, "remaining": remaining, "unmatched_players": sorted(unmatched_names)[:40],
+            "rows": stored, "game_rows": game_rows, "remaining": remaining, "unmatched_players": sorted(unmatched_names)[:40],
             "unmatched_events": unmatched_events, "errors": errors[:5]}
