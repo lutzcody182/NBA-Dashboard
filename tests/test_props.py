@@ -103,6 +103,20 @@ def test_market_table_uses_most_offered_line():
     assert t[0]["best_over"] == {"price": -110, "book": "fd"} and t[0]["best_under"] == {"price": -105, "book": "dk"}
     inputs = {("g", 7): {"min": 34, "p10": 28, "p90": 39, "status": "available", "name": "x",
                          "rates": {s: 0.85 for s in PM.STATS}}}
-    out = PX.compare(t, inputs, {s: {"k": 8.5} for s in PM.STATS})
+    out = PX.compare(t, inputs, {s: {"shape": "skewed", "a": 2.7, "b": 0.0, "g": 0.6} for s in PM.STATS})
     assert out[0]["model"]["mean"] == pytest.approx(28.9)
     assert out[0]["model"]["edge_over"] > 0
+
+
+def test_skewed_shape_matches_scaled_counts():
+    # points scored in 2s and 3s: spread grows with the square root of the average, about 2.7x a Poisson's
+    rng = np.random.default_rng(5)
+    mu = rng.uniform(5, 30, 40000)
+    x = 2.0 * rng.poisson(mu / 2.0) + rng.binomial(1, 0.3, len(mu)) - 0.3
+    line = np.floor(mu) + 0.5
+    sh = PM.fit_skewed(mu, x, line)
+    assert 1.6 < sh["a"] < 2.6 and sh["b"] < 0.01
+    po, pu, push = PM.over_under(20.5, 0.6, sh, 34, 28, 39)
+    assert po + pu == pytest.approx(1.0) and push == 0
+    po2, pu2, push2 = PM.over_under(20.0, 0.6, sh, 34, 28, 39)
+    assert po2 + pu2 + push2 == pytest.approx(1.0) and 0 < push2 < 0.2
