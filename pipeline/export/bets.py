@@ -25,7 +25,9 @@ Stakes
   or spread) per game. At most MAX_DAY_PICKS bets and MAX_DAY_UNITS units a
   day, best expected return first.
 Ledger
-  A pick is locked the first time it qualifies, at that price and book, and
+  A pick is locked the first time it qualifies on prices at most
+  FRESH_MINUTES old (any site update, not only right after a pull), at that
+  price and book, and
   never changed. After the game it is graded from the box score or final
   score; props for players who don't play are void. Closing line value
   compares the market's fair chance at the last pull before tip-off with
@@ -35,7 +37,7 @@ import json
 import logging
 import math
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -58,6 +60,7 @@ MAX_UNITS = 1.5
 MAX_GAME_UNITS = 3.0
 MAX_DAY_PICKS = 15
 MAX_DAY_UNITS = 12.0
+FRESH_MINUTES = 100       # picks are locked only from prices at most this old
 MIN_PRICE, MAX_PRICE = -250, 250
 
 TABLE = """
@@ -417,7 +420,14 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
     cands = prop_candidates(prop_rows or []) + game_candidates(table, sims)
     picks = select(cands)
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    added = lock(conn, picks, gmap, now_iso) if pulled.get("status") == "stored" else 0
+    # lock on any run while the stored prices are fresh, not only right after a pull
+    fresh = {r[0]: r[1] for r in conn.execute(
+        "SELECT game_id, MAX(fetched_at) FROM odds_snapshots WHERE source = ? GROUP BY game_id", (OA.SOURCE,))}
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESH_MINUTES)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lockable = [c for c in picks if (fresh.get(c["game_id"]) or "") >= cutoff]
+    added = lock(conn, lockable, gmap, now_iso)
+    for c in picks:
+        c["odds_at"] = fresh.get(c["game_id"])
     graded = grade(conn, season)
     ledger = pd.read_sql_query(
         """SELECT b.*, g.game_date, g.home_team_id, g.away_team_id, g.tip_utc, g.home_score, g.away_score
@@ -438,6 +448,8 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
                      "max_day_picks": MAX_DAY_PICKS, "max_day_units": MAX_DAY_UNITS,
                      "price_range": [MIN_PRICE, MAX_PRICE], "legal_books": sorted(OA.LEGAL_BOOKS)},
         "current": picks, "candidates": len(cands), "added_this_run": added, "graded_this_run": graded,
+        "odds_as_of": max((v for k, v in fresh.items() if k in gmap), default=None),
+        "next_pull": pulled.get("reason") if pulled.get("status") == "skipped" else None,
         "game_lines": game_lines,
         "ledger": {"cols": cols, "rows": led.values.tolist() if len(led) else []},
         "summary": summary(ledger) if len(ledger) else {"bets": 0, "graded": 0}, "by_kind": by_kind,
