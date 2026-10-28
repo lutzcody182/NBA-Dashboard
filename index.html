@@ -921,12 +921,18 @@ function renderPropsTrack() {
 function renderPropsModel() {
   const m = S.props?.model; const el = $("#pr-model");
   if (!m) { el.innerHTML = ""; return; }
-  const disp = Object.entries(m.dispersion).map(([s, v]) => `<tr><td class="l">${esc(S.props.stat_labels?.[s] ?? s)}</td><td>${v.k.toFixed(1)}</td><td>${v.n.toLocaleString()}</td></tr>`).join("");
+  const shapes = m.shapes ?? {};
+  const disp = Object.entries(shapes).map(([s, v]) => {
+    const ho = v.held_out ?? {};
+    const sd = v.shape === "skewed" ? `${Math.sqrt(v.a).toFixed(2)}×√avg` : `NB k ${fmt(v.k)}`;
+    return `<tr><td class="l">${esc(S.props.stat_labels?.[s] ?? s)}</td><td class="l">${v.shape === "skewed" ? "Skewed curve" : "Neg. binomial"}</td><td>${sd}</td>
+      <td>${ho.nb ? pct(ho.nb.predicted_over) + "%" : "—"}</td><td>${ho.skewed ? pct(ho.skewed.predicted_over) + "%" : "—"}</td><td>${v.actual_over != null ? pct(v.actual_over) + "%" : "—"}</td></tr>`;
+  }).join("");
   const chk = m.check?.stats ?? {};
   const chkRows = Object.entries(chk).map(([s, v]) => `<tr><td class="l">${esc(S.props.stat_labels?.[s] ?? s)}</td><td>${v.n.toLocaleString()}</td><td>${pct(v.mean_pred)}%</td><td>${pct(v.mean_actual)}%</td><td>${v.brier.toFixed(3)}</td></tr>`).join("");
-  el.innerHTML = `<p class="pr-note">Three layers. (1) The game simulation gives each player's shots, rebounds, assists and threes per minute, with teammates' absences already moved to him. (2) Minutes if he plays come from the minutes model, with its own 10th to 90th percentile range, since books void the bet when a player sits. (3) At a given minutes total the stat follows a negative binomial: like a Poisson count but with extra spread, sized by k (smaller k = more spread). k was fitted on every ${esc(m.season)} game: each player's rate over his previous 20 games, times the minutes he actually played, against what he did.</p>
-    <table><thead><tr><th class="l">Stat</th><th>k</th><th>Games fitted</th></tr></thead><tbody>${disp}</tbody></table>
-    <p class="pr-note" style="margin-top:12px">Check on ${esc(m.season)}, with each player's last-10 minutes average (±${m.check?.minutes_sd} min) standing in for the projection and lines placed near his average: predicted chance of going over vs how often he did. Points run a few points low here, mostly from the simple stand-in average; the live track record is the real test.</p>
+  el.innerHTML = `<p class="pr-note">Three layers. (1) The game simulation gives each player's shots, rebounds, assists and threes per minute, with teammates' absences already moved to him. (2) Minutes if he plays come from the minutes model, with its own 10th to 90th percentile range, since books void the bet when a player sits. (3) At a given minutes total, the spread of the stat around its average. Two shapes were tried for each stat: a negative binomial, and a skewed curve whose spread grows with the square root of the average (points come in 2s and 3s, so their spread is about √2.7 times that). Each was fitted on one season and scored on the next, using each player's rate over his previous 20 games times the minutes he actually played; the better one is kept and refitted on ${esc(m.season)}.</p>
+    <div style="overflow-x:auto"><table><thead><tr><th class="l">Stat</th><th class="l">Shape kept</th><th>Spread</th><th>Neg. binomial said over</th><th>Skewed said over</th><th>Went over</th></tr></thead><tbody>${disp}</tbody></table></div>
+    <p class="pr-note" style="margin-top:12px">Check on ${esc(m.season)}, with each player's last-10 minutes average (±${m.check?.minutes_sd} min) standing in for the projection and lines placed near his average: predicted chance of going over vs how often he did. ${m.check?.out_of_sample ? "Settings for this check were fitted only on earlier seasons." : ""} The live track record is the real test.</p>
     <table><thead><tr><th class="l">Stat</th><th>Props</th><th>Predicted over</th><th>Went over</th><th>Brier</th></tr></thead><tbody>${chkRows}</tbody></table>
     <p class="pr-note" style="margin-top:12px">Not betting advice. A difference can mean the model missed news (a late scratch, a minutes limit) that the books already have.</p>`;
 }
