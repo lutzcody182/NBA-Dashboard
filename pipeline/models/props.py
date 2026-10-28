@@ -91,21 +91,91 @@ def minutes_points(mean: float, p10: float, p90: float, n: int = 15):
     return np.clip(m, 0.5, 48.0), np.full(n, 1.0 / n)
 
 
-def over_under(line: float, rate: float, k: float, min_mean: float, p10: float, p90: float):
-    """(P over, P under, P push) for one line."""
+G_GRID = np.round(np.arange(0.0, 3.01, 0.1), 2)
+
+
+def _cdf(x, mu, shape: dict):
+    """P(X <= x) for a continuous x (lines sit on half points), at mean(s) mu."""
+    mu = np.maximum(mu, 1e-6)
+    if shape["shape"] == "nb":
+        k = shape["k"]
+        return st.nbinom.cdf(np.floor(x), k, k / (k + mu))
+    # shifted gamma with mean mu, variance a*mu + b*mu^2 and skew g*sd/mu
+    var = np.maximum(shape["a"] * mu + shape["b"] * mu ** 2, 0.05)
+    sd = np.sqrt(var)
+    skew = np.maximum(shape["g"] * sd / mu, 1e-3)
+    alpha = 4.0 / skew ** 2
+    theta = sd * skew / 2.0
+    loc = mu - alpha * theta
+    return st.gamma.cdf(x - loc, alpha, scale=theta)
+
+
+def over_under(line: float, rate: float, shape, min_mean: float, p10: float, p90: float):
+    """(P over, P under, P push) for one line. `shape`: a fitted shape dict (or a bare NB k)."""
+    if not isinstance(shape, dict):
+        shape = {"shape": "nb", "k": float(shape)}
     mins, w = minutes_points(min_mean, p10, p90)
-    mu = np.maximum(rate * mins, 1e-6)
-    p = k / (k + mu)                     # scipy's nbinom: n=k, p=k/(k+mu)
+    mu = rate * mins
     if float(line).is_integer():
-        under = float(w @ st.nbinom.cdf(line - 1, k, p))
-        push = float(w @ st.nbinom.pmf(line, k, p))
+        under = float(w @ _cdf(line - 0.5, mu, shape))
+        push = float(w @ _cdf(line + 0.5, mu, shape)) - under
     else:
-        under = float(w @ st.nbinom.cdf(math.floor(line), k, p))
+        under = float(w @ _cdf(line, mu, shape))
         push = 0.0
     return 1.0 - under - push, under, push
 
 
-def calibration_check(logs: pd.DataFrame, disp: dict, min_sd: float = None) -> dict:
+def _known_minutes(logs, min_minutes=15.0, seed=1):
+    """Player-games with mean = prior rate x actual minutes, and a line near that mean."""
+    df = prior_rates(logs)
+    df = df[(df["min"] >= min_minutes) & (df["prior_min"] >= 100)]
+    rng = np.random.default_rng(seed)
+    out = {}
+    for s in STATS:
+        mu = (df[f"rate_{s}"] * df["min"]).to_numpy(float)
+        x = df[s].to_numpy(float)
+        line = np.floor(mu + rng.uniform(-0.5, 0.5, len(mu)) * np.maximum(1.0, 0.25 * mu)) + 0.5
+        ok = line > 0
+        out[s] = (mu[ok], x[ok], line[ok])
+    return out
+
+
+def _brier(shape, mu, x, line):
+    p = 1 - _cdf(line, mu, shape)
+    return float(np.mean((p - (x > line)) ** 2)), float(p.mean())
+
+
+def fit_skewed(mu, x, line) -> dict:
+    """Variance a*mu + b*mu^2 from the residuals, then the skew that best predicts overs."""
+    A = np.vstack([mu, mu ** 2]).T
+    a, b = np.linalg.lstsq(A, (x - mu) ** 2, rcond=None)[0]
+    a, b = float(max(a, 0.2)), float(max(b, 0.0))
+    best = min(((_brier({"shape": "skewed", "a": a, "b": b, "g": g}, mu, x, line)[0], g) for g in G_GRID if g > 0))
+    return {"shape": "skewed", "a": round(a, 4), "b": round(b, 5), "g": float(best[1])}
+
+
+def fit_shapes(train_logs: pd.DataFrame, test_logs: pd.DataFrame) -> dict:
+    """Per stat: fit both shapes on one season, keep whichever predicts overs better on the next.
+
+    The kept shape is then refitted on the newer season for live use.
+    """
+    nb_tr, nb_te = fit_dispersion(train_logs), fit_dispersion(test_logs)
+    tr, te = _known_minutes(train_logs), _known_minutes(test_logs, seed=2)
+    out = {}
+    for s in STATS:
+        cand = {"nb": {"shape": "nb", "k": nb_tr[s]["k"]}, "skewed": fit_skewed(*tr[s])}
+        mu, x, line = te[s]
+        scores = {n: _brier(c, mu, x, line) for n, c in cand.items()}
+        pick = min(scores, key=lambda n: scores[n][0])
+        live = {"shape": "nb", "k": nb_te[s]["k"]} if pick == "nb" else fit_skewed(*te[s])
+        out[s] = {**live, "n": int(len(mu)), "held_out": {
+            n: {"brier": round(v[0], 5), "predicted_over": round(v[1], 4)} for n, v in scores.items()},
+            "actual_over": round(float((x > line).mean()), 4), "trained_on": "previous season",
+            "tested_on": "next season"}
+    return out
+
+
+def calibration_check(logs: pd.DataFrame, shapes: dict, min_sd: float = None) -> dict:
     """Predicted vs actual chance of going over on a past season, minutes not known in advance."""
     df = prior_rates(logs)
     df = df[(df["prior_min"] >= 100) & df["l10_min"].notna() & (df["l10_min"] >= 15) & (df["min"] > 0)].copy()
@@ -114,7 +184,7 @@ def calibration_check(logs: pd.DataFrame, disp: dict, min_sd: float = None) -> d
     out = {}
     rng = np.random.default_rng(7)
     for s in ("pts", "reb", "ast", "fg3m", "pra"):
-        k = disp[s]["k"]
+        shape = shapes[s]
         sub = df.sample(min(len(df), 6000), random_state=7)
         preds, hits = [], []
         for r in sub.itertuples():
@@ -123,7 +193,7 @@ def calibration_check(logs: pd.DataFrame, disp: dict, min_sd: float = None) -> d
             line = math.floor(mean + rng.uniform(-0.5, 0.5) * max(1.0, 0.25 * mean)) + 0.5
             if line < 0.5:
                 continue
-            po, pu, _ = over_under(line, rate, k, r.l10_min, r.l10_min - Z90 * min_sd, r.l10_min + Z90 * min_sd)
+            po, pu, _ = over_under(line, rate, shape, r.l10_min, r.l10_min - Z90 * min_sd, r.l10_min + Z90 * min_sd)
             preds.append(po)
             hits.append(float(getattr(r, s) > line))
         preds, hits = np.array(preds), np.array(hits)
