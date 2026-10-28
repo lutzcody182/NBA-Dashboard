@@ -100,17 +100,21 @@ def _rosters(proj: dict, conn) -> dict:
     return out
 
 
-def _latest_odds(conn, game_ids):
+def _latest_odds(conn, game_ids, props: bool = True, legal_only: bool = True):
+    """Latest stored odds per game, player props or game lines, from state-licensed US books by default."""
     if not game_ids:
         return pd.DataFrame()
     q = ",".join("?" * len(game_ids))
+    which = "player_id IS NOT NULL" if props else "player_id IS NULL"
     df = pd.read_sql_query(
         f"""SELECT o.* FROM odds_snapshots o
             JOIN (SELECT game_id, MAX(fetched_at) AS f FROM odds_snapshots
-                  WHERE source = ? AND game_id IN ({q}) AND player_id IS NOT NULL GROUP BY game_id) m
+                  WHERE source = ? AND game_id IN ({q}) AND {which} GROUP BY game_id) m
               ON m.game_id = o.game_id AND m.f = o.fetched_at
-            WHERE o.source = ? AND o.player_id IS NOT NULL""",
+            WHERE o.source = ? AND o.{which}""",
         conn, params=[OA.SOURCE, *game_ids, OA.SOURCE])
+    if legal_only and not df.empty:
+        df = df[df["book"].isin(OA.LEGAL_BOOKS)]
     return df
 
 
@@ -324,4 +328,5 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
                    "markets": len(OA.MARKETS), "reserve": OA.RESERVE_CREDITS},
     }
     write(out_dir / "props.json", payload)
-    return {"status": pulled["status"], "reason": pulled.get("reason"), "props": len(rows)}
+    return {"status": pulled["status"], "reason": pulled.get("reason"), "props": len(rows),
+            "_rows": rows, "_pulled": pulled}
