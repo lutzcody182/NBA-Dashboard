@@ -523,6 +523,7 @@ def project_games(conn, season: str, games: list, rates: dict) -> dict:
                     "status": e["status"] if e else ("available" if submitted else "unknown"),
                     "reason": e["reason"] if e else None,
                     "min": round(b["min"], 1) if b else 0.0, "p10": round(b["p10"], 1) if b else 0.0,
+                    "min_if_plays": round(b["if_plays"], 1) if b else None,
                     "p90": round(b["p90"], 1) if b else 0.0,
                     "expected_min": round(expected[str(p)], 1) if expected and str(p) in expected else None,
                     "appear": {k: (round(v, 3) if isinstance(v, float) else v) for k, v in odds[p].items()} if p in odds else None,
