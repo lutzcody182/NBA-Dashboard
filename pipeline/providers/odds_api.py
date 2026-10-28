@@ -4,10 +4,11 @@ The key comes from the ODDS_API_KEY environment variable (a GitHub secret);
 it is never written to the database or the site.
 
 Cost: listing events is free; each event's odds cost one credit per market
-returned (one region). To stay inside a monthly plan, a pull happens at most
-MAX_PULLS_PER_DAY times per Eastern day, at least MIN_HOURS_BETWEEN apart,
-only for games that have not started, and never when fewer than
-RESERVE_CREDITS remain.
+returned (one region), and the game lines one credit per market for the
+whole slate. To stay inside a monthly plan, each Eastern day gets
+DAILY_CREDIT_CAP credits. Pulls are spread so the day's budget lasts until
+the first tip-off (never closer than MIN_HOURS_BETWEEN), only for games that
+have not started, and never when fewer than RESERVE_CREDITS remain.
 """
 import os
 import re
@@ -31,8 +32,9 @@ LEGAL_BOOKS = {
     "hardrockbet", "ballybet", "betparx", "pointsbetus", "unibet_us", "superbook", "wynnbet", "windcreek",
     "betway", "tipico", "sisportsbook", "circasports", "twinspires", "foxbet", "barstool",
 }
-MAX_PULLS_PER_DAY = 3
-MIN_HOURS_BETWEEN = 3.0
+MAX_PULLS_PER_DAY = 8
+MIN_HOURS_BETWEEN = 1.25          # never closer than this
+DAILY_CREDIT_CAP = 450            # about 13,500 a month on a full schedule; the plan has 20,000
 LOOKAHEAD_HOURS = 8
 RESERVE_CREDITS = 1500
 SOURCE = "odds_api"
@@ -79,6 +81,10 @@ def _save_state(conn, s: dict, now_iso: str):
     conn.commit()
 
 
+def pull_cost(n_games: int) -> int:
+    return n_games * len(MARKETS) + len(GAME_MARKETS)
+
+
 def should_pull(state: dict, now: datetime, upcoming: list, et_day: str):
     """(yes/no, reason). `upcoming`: tip times (UTC datetimes) of games not yet started."""
     if not upcoming:
@@ -89,10 +95,19 @@ def should_pull(state: dict, now: datetime, upcoming: list, et_day: str):
     today = [p for p in state.get("pulls", []) if p.get("et_day") == et_day]
     if len(today) >= MAX_PULLS_PER_DAY:
         return False, f"already pulled {len(today)} times today"
+    used = sum(p.get("cost", pull_cost(p.get("games", 0))) for p in today)
+    cost = pull_cost(len(soon))
+    left = (DAILY_CREDIT_CAP - used) // max(cost, 1)
+    if left < 1:
+        return False, f"today's odds budget is used ({int(used)} of {DAILY_CREDIT_CAP} credits)"
     if today:
         last = max(_parse(p["at"]) for p in today)
-        if now - last < timedelta(hours=MIN_HOURS_BETWEEN):
-            return False, f"last pull {((now - last).total_seconds() / 3600):.1f} hours ago"
+        # spread the pulls that are left over the time until the first game starts
+        hours_to_tip = (min(soon) - now).total_seconds() / 3600
+        gap = max(MIN_HOURS_BETWEEN, min(3.0, hours_to_tip / left))
+        if now - last < timedelta(hours=gap):
+            return False, f"last pull {((now - last).total_seconds() / 3600):.1f} hours ago; next in about " \
+                          f"{max(0, gap - (now - last).total_seconds() / 3600) * 60:.0f} minutes"
     rem = state.get("remaining")
     if rem is not None and rem < RESERVE_CREDITS:
         return False, f"only {int(rem)} credits left this month"
@@ -253,7 +268,11 @@ def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = N
             errors.append(f"game lines: {exc}")
     conn.commit()
     state["pulls"] = state.get("pulls", [])[-30:]
-    state["pulls"].append({"at": fetched_at, "et_day": et_day, "games": matched, "rows": stored, "game_rows": game_rows})
+    before = state.get("remaining")
+    cost = (before - remaining) if before is not None and remaining is not None and before >= remaining \
+        else pull_cost(matched)
+    state["pulls"].append({"at": fetched_at, "et_day": et_day, "games": matched, "rows": stored, "game_rows": game_rows,
+                           "cost": cost})
     state["remaining"] = remaining
     _save_state(conn, state, fetched_at)
     return {"status": "error" if errors and not stored else "stored", "fetched_at": fetched_at, "games": matched,
