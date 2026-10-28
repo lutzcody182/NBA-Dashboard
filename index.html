@@ -243,6 +243,22 @@ tr.sel { background: var(--panel-2); }
   .profile, .model-grid { grid-template-columns: minmax(0, 1fr); }
   .tabs { flex-wrap: wrap; }
 }
+/* Props */
+.pr-head { display: flex; flex-wrap: wrap; gap: 8px 22px; color: var(--muted); font-size: 13px; margin: -4px 0 14px; }
+.pr-head strong { color: var(--text); font-weight: 600; }
+#pr-table tbody tr.main { cursor: pointer; }
+#pr-table tbody tr.main:hover td { background: var(--panel-2); }
+#pr-table td.edge { font-weight: 700; }
+.edge.pos { color: var(--good); } .edge.neg { color: var(--bad); }
+.pr-detail td { background: var(--bg); white-space: normal; text-align: left; font-family: var(--body); font-size: 13px; color: var(--muted); }
+.pr-detail table { width: auto; margin: 4px 0; }
+.pr-detail table td, .pr-detail table th { font-size: 13px; padding: 3px 10px; background: none; }
+.pr-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 18px; align-items: start; }
+.pr-grid > * { min-width: 0; }
+.pr-grid table td, .pr-grid table th { font-size: 13px; }
+.pr-grid th { position: static; cursor: default; }
+.pr-note { color: var(--muted); font-size: 13px; margin: 6px 0 0; white-space: normal; }
+@media (max-width: 720px) { .pr-grid { grid-template-columns: minmax(0, 1fr); } }
 /* Daily */
 .lb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(212px, 100%), 1fr)); gap: 12px; margin-bottom: 18px; }
 .lb { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 12px 8px; min-width: 0; }
@@ -268,6 +284,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
   <h1 class="brand">NBA Court <span>Lab</span></h1>
   <nav class="tabs" role="tablist" aria-label="Sections">
     <button class="tab" role="tab" data-view="games" aria-selected="true">Games</button>
+    <button class="tab" role="tab" data-view="props" aria-selected="false">Props</button>
     <button class="tab" role="tab" data-view="daily" aria-selected="false">Daily</button>
     <button class="tab" role="tab" data-view="leaders" aria-selected="false">Leaders</button>
     <button class="tab" role="tab" data-view="teams" aria-selected="false">Teams</button>
@@ -298,6 +315,26 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     <h2 id="games-title">Games</h2>
     <p class="sub">Season ratings for both teams, side by side, and each team's projected rotation from the latest official injury report. Opponent-adjusted ratings correct for who each team has played. The bar under each game is 10,000 simulated games: who wins how often, the projected score, spread and total. Open the simulation for the spread of outcomes, what moved it, and player projections.</p>
     <div class="games" id="games"></div>
+  </section>
+
+  <!-- Props -->
+  <section class="view" id="view-props" hidden>
+    <h2>Player props: books vs the model</h2>
+    <p class="sub">For each player and stat, the line most sportsbooks are offering, the market's chance of going over once each book's built-in margin is removed, and the model's chance from the game simulation and the player's range of minutes if he plays. Big differences are where to look closer, not automatic bets: sportsbook lines are sharp, and the track record below shows whether the model's differences have held up.</p>
+    <div class="pr-head" id="pr-head"></div>
+    <div class="controls">
+      <label class="ctl">Game<select id="pr-game"><option value="">All games</option></select></label>
+      <label class="ctl">Stat<select id="pr-stat"><option value="">All stats</option></select></label>
+      <label class="ctl">Player<input id="pr-search" type="search" placeholder="Name" style="width:150px"></label>
+      <label class="ctl">Min. difference (pts)<input id="pr-edge" type="number" min="0" max="50" value="0"></label>
+      <label class="ctl">Min. books<input id="pr-books" type="number" min="1" max="20" value="1"></label>
+    </div>
+    <div class="table-wrap"><table id="pr-table"></table></div>
+    <p class="count" id="pr-count"></p>
+    <div class="pr-grid">
+      <div class="panel"><h3>Track record</h3><div id="pr-track"></div></div>
+      <div class="panel"><h3>How the model's chances are built</h3><div id="pr-model"></div></div>
+    </div>
   </section>
 
   <!-- Daily -->
@@ -433,6 +470,7 @@ const S = {
   day: "today", focusGame: null,
   leaders: { sort: "pts", dir: -1 },
   daily: null, dailyView: { sort: "gmsc", dir: -1 },
+  props: null, propsView: { sort: "absedge", dir: -1, open: null },
   teamsView: { group: "overview", sort: "adj_net", dir: -1, team: null, roll: 10 },
   proj: null, projByGame: {}, scenario: {}, pratings: {}, lineups: {}, sims: null, simByGame: {}, sq: {},
   playersView: { group: "overview", sort: "overall", dir: -1, player: null, all: false },
@@ -777,6 +815,120 @@ function renderLeaders() {
   }));
   const range = from ? (from === to ? fmtDay(from) : `${fmtDay(from)} to ${fmtDay(to)}`) : `the ${season} season`;
   $("#leaders-count").textContent = `${agg.length} players for ${range}${agg.length > shown.length ? `, showing the top ${shown.length}` : ""}. Baseline compares ${baseStat.toUpperCase()} per game.`;
+}
+
+// ---------- props ----------
+const BOOK_NAME = { draftkings: "DraftKings", fanduel: "FanDuel", betmgm: "BetMGM", caesars: "Caesars", williamhill_us: "Caesars",
+  espnbet: "ESPN BET", betrivers: "BetRivers", fanatics: "Fanatics", bovada: "Bovada", betonlineag: "BetOnline", mybookieag: "MyBookie",
+  hardrockbet: "Hard Rock", ballybet: "Bally Bet", lowvig: "LowVig", betus: "BetUS", pointsbetus: "PointsBet", unibet_us: "Unibet" };
+const bookName = (b) => BOOK_NAME[b] ?? b;
+const odds = (p) => p == null ? "—" : (p > 0 ? "+" : "") + p;
+function gameLabel(gid) {
+  const g = S.simByGame[gid] ?? S.projByGame[gid];
+  if (g?.home_team_id) return `${abbr(g.away_team_id)} @ ${abbr(g.home_team_id)}`;
+  const t = Object.keys(g?.teams ?? {}); return t.length === 2 ? `${abbr(+t[0])} / ${abbr(+t[1])}` : gid;
+}
+function propTeam(p) {
+  const pg = S.projByGame[p.game_id];
+  for (const [tid, t] of Object.entries(pg?.teams ?? {})) if ((t.players ?? []).some((x) => x.player_id === p.player_id)) return +tid;
+  return S.players[p.player_id]?.team_id;
+}
+function renderProps() {
+  const d = S.props;
+  const head = $("#pr-head"), table = $("#pr-table");
+  if (!d) { head.innerHTML = ""; table.innerHTML = `<tbody><tr><td class="empty">Props have not been published yet.</td></tr></tbody>`; return; }
+  const asOf = Object.values(d.odds_as_of ?? {}).sort().pop();
+  const pull = d.pull ?? {};
+  const why = pull.status === "skipped" ? `Last check: ${esc(pull.reason ?? "")}.` : pull.status === "error" ? `<span style="color:var(--bad)">Last pull failed: ${esc((pull.errors ?? []).join("; "))}</span>` : "";
+  head.innerHTML = [
+    `<span>Odds as of <strong>${asOf ? fmtStamp(asOf) : "no pull yet"}</strong></span>`,
+    d.credits_remaining != null ? `<span>API credits left this month <strong>${Math.round(d.credits_remaining).toLocaleString()}</strong></span>` : "",
+    `<span>Pulled up to ${d.budget?.max_pulls_per_day ?? 3} times a day, at least ${d.budget?.hours_between ?? 3} hours apart, for games starting within 8 hours</span>`,
+    why ? `<span>${why}</span>` : "",
+  ].join("");
+  const gid = $("#pr-game").value, stat = $("#pr-stat").value, q = $("#pr-search").value.trim().toLowerCase();
+  const minEdge = (Number($("#pr-edge").value) || 0) / 100, minBooks = Number($("#pr-books").value) || 1;
+  let rows = (d.props ?? []).map((p) => {
+    p.name = S.players[p.player_id]?.name ?? (S.simByGame[p.game_id] ? null : null) ?? `#${p.player_id}`;
+    for (const t of Object.values(S.projByGame[p.game_id]?.teams ?? {})) { const x = (t.players ?? []).find((y) => y.player_id === p.player_id); if (x) p.name = x.name; }
+    p.team = propTeam(p);
+    p.mpo = p.model ? p.model.p_over / (p.model.p_over + p.model.p_under) : null;
+    p.edge = p.model?.edge_over ?? null; p.absedge = p.edge == null ? null : Math.abs(p.edge);
+    p.bestev = p.model ? Math.max(p.model.ev_over, p.model.ev_under) : null;
+    return p;
+  });
+  rows = rows.filter((p) => (!gid || p.game_id === gid) && (!stat || p.stat === stat) && (!q || p.name.toLowerCase().includes(q))
+    && p.books.length >= minBooks && (minEdge === 0 || (p.absedge ?? 0) >= minEdge));
+  const { sort, dir } = S.propsView;
+  const key = { absedge: (p) => p.absedge, edge: (p) => p.edge, line: (p) => p.line, fair: (p) => p.fair_over, model: (p) => p.mpo,
+    mean: (p) => p.model?.mean, books: (p) => p.books.length, ev: (p) => p.bestev, name: (p) => p.name }[sort] ?? ((p) => p.absedge);
+  rows.sort((a, b) => { const x = key(a), y = key(b); if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
+    return typeof x === "string" ? dir * x.localeCompare(y) : dir > 0 ? x - y : y - x; });
+  const cols = [["name", "Player", "l"], ["game", "Game", "l"], ["stat", "Stat", "l"], ["line", "Line"], ["fair", "Market over"], ["model", "Model over"],
+    ["edge", "Difference"], ["mean", "Model avg"], ["over", "Best over"], ["under", "Best under"], ["ev", "Best value"], ["books", "Books"]];
+  const tips = { fair: "Median across books of the over chance with each book's margin removed", model: "Model's chance of going over (pushes left out)",
+    edge: "Model over chance minus market over chance, in percentage points", mean: "Model's average if he plays",
+    ev: "Expected return per $1 on the side the model likes better, at the best price listed, if the model's chances were right",
+    absedge: "" };
+  const thead = `<thead><tr>${cols.map(([k, l, c]) => `<th class="${c ?? ""}" data-k="${k}" title="${esc(tips[k] ?? "")}" ${k === sort ? `aria-sort="${dir < 0 ? "descending" : "ascending"}"` : ""}>${l}</th>`).join("")}</tr></thead>`;
+  const shown = rows.slice(0, 300);
+  const body = shown.map((p) => {
+    const id = `${p.game_id}|${p.player_id}|${p.stat}`;
+    const m = p.model;
+    const ecls = p.edge == null ? "" : Math.abs(p.edge) < 0.03 ? "" : p.edge > 0 ? "pos" : "neg";
+    const side = m ? (m.ev_over >= m.ev_under ? "over" : "under") : null;
+    const main = `<tr class="main" data-id="${esc(id)}"><td class="name">${esc(p.name)}<small>${abbr(p.team)}${m?.status && !["available", "unknown"].includes(m.status) ? " " + esc(m.status) : ""}</small></td>
+      <td class="l">${esc(gameLabel(p.game_id))}</td><td class="l">${esc(d.stat_labels?.[p.stat] ?? p.stat)}</td><td>${fmt(p.line)}</td>
+      <td>${pct(p.fair_over)}%</td><td>${m ? pct(p.mpo) + "%" : "—"}</td>
+      <td class="edge ${ecls}">${p.edge == null ? "—" : signed(100 * p.edge, 1)}</td><td>${m ? fmt(m.mean) : "—"}</td>
+      <td>${odds(p.best_over.price)} <small style="color:var(--muted)">${esc(bookName(p.best_over.book))}</small></td>
+      <td>${odds(p.best_under.price)} <small style="color:var(--muted)">${esc(bookName(p.best_under.book))}</small></td>
+      <td>${m ? `${signed(100 * p.bestev, 1)}% <small style="color:var(--muted)">${side}</small>` : "—"}</td><td>${p.books.length}</td></tr>`;
+    if (S.propsView.open !== id) return main;
+    const bk = p.books.map((b) => `<tr><td class="l">${esc(bookName(b.book))}</td><td>${odds(b.over)}</td><td>${odds(b.under)}</td><td>${pct(b.fair_over)}%</td><td>${pct(b.hold)}%</td></tr>`).join("");
+    const why = m ? `If he plays, the model expects about ${fmt(m.min)} minutes and ${fmt(m.mean)} ${esc((d.stat_labels?.[p.stat] ?? p.stat).toLowerCase())}. Over ${fmt(p.line)}: ${pct(m.p_over)}%, under: ${pct(m.p_under)}%${m.p_push > 0.001 ? `, push: ${pct(m.p_push)}%` : ""}.` : "No model number: the player isn't in the simulation (listed out, or projected for under 3 minutes).";
+    return main + `<tr class="pr-detail"><td colspan="${cols.length}"><p class="pr-note">${why}${p.other_lines?.length ? ` Other lines offered: ${p.other_lines.map((l) => fmt(l)).join(", ")}.` : ""}</p>
+      <table><thead><tr><th class="l">Book</th><th>Over</th><th>Under</th><th>Fair over</th><th>Margin</th></tr></thead><tbody>${bk}</tbody></table></td></tr>`;
+  }).join("");
+  const empty = (d.props ?? []).length ? "No props match these filters." : "No odds stored for upcoming games yet. Odds are pulled starting around noon Eastern on game days.";
+  table.innerHTML = thead + `<tbody>${body || `<tr><td class="empty" colspan="${cols.length}">${empty}</td></tr>`}</tbody>`;
+  table.querySelectorAll("th[data-k]").forEach((th) => th.addEventListener("click", () => {
+    const k = th.dataset.k; if (["game", "stat", "over", "under"].includes(k)) return;
+    const kk = k === "edge" && S.propsView.sort === "absedge" ? "edge" : k;
+    S.propsView = { ...S.propsView, sort: kk, dir: S.propsView.sort === kk ? -S.propsView.dir : -1 }; renderProps();
+  }));
+  table.querySelectorAll("tr.main").forEach((tr) => tr.addEventListener("click", () => {
+    S.propsView.open = S.propsView.open === tr.dataset.id ? null : tr.dataset.id; renderProps();
+  }));
+  $("#pr-count").textContent = `${rows.length} props${rows.length > shown.length ? `, showing ${shown.length}` : ""}. Sorted by the size of the difference by default; click a row for every book's prices.`;
+  renderPropsTrack(); renderPropsModel();
+}
+function renderPropsTrack() {
+  const t = S.props?.track_record ?? {};
+  const el = $("#pr-track");
+  if (!t.graded) { el.innerHTML = `<p class="pr-note">Nothing graded yet. Each player and stat is graded once his game is final, using the last comparison saved before tip-off. Players who don't play are left out, as books void those bets. It takes a few hundred graded props before these numbers mean much.</p>`; return; }
+  const o = t.overall;
+  const better = o.brier_model < o.brier_market;
+  const statRows = Object.entries(t.by_stat ?? {}).map(([s, v]) => `<tr><td class="l">${esc(S.props.stat_labels?.[s] ?? s)}</td><td>${v.n}</td><td>${v.brier_model.toFixed(4)}</td><td>${v.brier_market.toFixed(4)}</td></tr>`).join("");
+  const pk = (t.picks ?? []).map((p) => p.n ? `<tr><td class="l">${Math.round(p.threshold * 100)}+ pts</td><td>${p.n}</td><td>${p.won}</td><td>${signed(p.units, 1)}</td><td>${signed(100 * p.roi, 1)}%${p.roi_se != null ? ` <small style="color:var(--muted)">± ${(100 * p.roi_se).toFixed(1)}</small>` : ""}</td></tr>` : `<tr><td class="l">${Math.round(p.threshold * 100)}+ pts</td><td>0</td><td colspan="3">—</td></tr>`).join("");
+  const cal = (t.calibration ?? []).map((b) => `<tr><td class="l">${b.bin}</td><td>${b.n}</td><td>${pct(b.model)}%</td><td>${pct(b.market)}%</td><td>${pct(b.actual)}%</td></tr>`).join("");
+  el.innerHTML = `<p class="pr-note">${t.graded} props graded from ${t.games} games (${fmtDay(t.first)} to ${fmtDay(t.last)}). Brier score is the average squared miss of the over chance; lower is better. The model is currently ${better ? "<strong style='color:var(--good)'>ahead of</strong>" : "<strong style='color:var(--bad)'>behind</strong>"} the market (${o.brier_model.toFixed(4)} vs ${o.brier_market.toFixed(4)}).</p>
+    <table><thead><tr><th class="l">Stat</th><th>Props</th><th>Model</th><th>Market</th></tr></thead><tbody>${statRows}</tbody></table>
+    <p class="pr-note" style="margin-top:12px">If you had bet $1 on the model's side whenever it differed from the market by at least this much, at the best price listed. The ± is one standard error: a result inside it is indistinguishable from luck.</p>
+    <table><thead><tr><th class="l">Difference</th><th>Bets</th><th>Won</th><th>Units</th><th>Return</th></tr></thead><tbody>${pk}</tbody></table>
+    ${cal ? `<p class="pr-note" style="margin-top:12px">Calibration: when the model said X%, how often did it go over?</p><table><thead><tr><th class="l">Model said</th><th>Props</th><th>Model</th><th>Market</th><th>Went over</th></tr></thead><tbody>${cal}</tbody></table>` : ""}`;
+}
+function renderPropsModel() {
+  const m = S.props?.model; const el = $("#pr-model");
+  if (!m) { el.innerHTML = ""; return; }
+  const disp = Object.entries(m.dispersion).map(([s, v]) => `<tr><td class="l">${esc(S.props.stat_labels?.[s] ?? s)}</td><td>${v.k.toFixed(1)}</td><td>${v.n.toLocaleString()}</td></tr>`).join("");
+  const chk = m.check?.stats ?? {};
+  const chkRows = Object.entries(chk).map(([s, v]) => `<tr><td class="l">${esc(S.props.stat_labels?.[s] ?? s)}</td><td>${v.n.toLocaleString()}</td><td>${pct(v.mean_pred)}%</td><td>${pct(v.mean_actual)}%</td><td>${v.brier.toFixed(3)}</td></tr>`).join("");
+  el.innerHTML = `<p class="pr-note">Three layers. (1) The game simulation gives each player's shots, rebounds, assists and threes per minute, with teammates' absences already moved to him. (2) Minutes if he plays come from the minutes model, with its own 10th to 90th percentile range, since books void the bet when a player sits. (3) At a given minutes total the stat follows a negative binomial: like a Poisson count but with extra spread, sized by k (smaller k = more spread). k was fitted on every ${esc(m.season)} game: each player's rate over his previous 20 games, times the minutes he actually played, against what he did.</p>
+    <table><thead><tr><th class="l">Stat</th><th>k</th><th>Games fitted</th></tr></thead><tbody>${disp}</tbody></table>
+    <p class="pr-note" style="margin-top:12px">Check on ${esc(m.season)}, with each player's last-10 minutes average (±${m.check?.minutes_sd} min) standing in for the projection and lines placed near his average: predicted chance of going over vs how often he did. Points run a few points low here, mostly from the simple stand-in average; the live track record is the real test.</p>
+    <table><thead><tr><th class="l">Stat</th><th>Props</th><th>Predicted over</th><th>Went over</th><th>Brier</th></tr></thead><tbody>${chkRows}</tbody></table>
+    <p class="pr-note" style="margin-top:12px">Not betting advice. A difference can mean the model missed news (a late scratch, a minutes limit) that the books already have.</p>`;
 }
 
 // ---------- daily ----------
@@ -1362,6 +1514,7 @@ function showView(name) {
   if (name === "teams" && S.teamsView.team) setTimeout(() => echarts?.getInstanceByDom($("#trend"))?.resize(), 0);
   if (name === "model") { renderModel(); renderSimModel(); }
   if (name === "daily") renderDaily();
+  if (name === "props") renderProps();
   history.replaceState(null, "", "#" + name);
 }
 
@@ -1398,6 +1551,7 @@ async function init() {
   const extra = await Promise.allSettled([
     getJSON("projections.json"), getJSON("sims.json"), getJSON(`teams/shot_quality_${S.meta.season}.json`),
     getJSON("daily.json").then((d) => { S.daily = d; }),
+    getJSON("props.json").then((d) => { S.props = d; }),
     ...[S.meta.season, S.meta.previous_season].flatMap((sid) => [getJSON(`players/ratings_${sid}.json`), getJSON(`teams/lineups_${sid}.json`)]),
   ]);
   S.proj = extra[0].status === "fulfilled" ? extra[0].value : null;
@@ -1406,7 +1560,7 @@ async function init() {
   S.simByGame = Object.fromEntries((S.sims?.games ?? []).map((g) => [g.game_id, g]));
   if (extra[2].status === "fulfilled") S.sq[S.meta.season] = extra[2].value;
   [S.meta.season, S.meta.previous_season].forEach((sid, i) => {
-    const r = extra[4 + 2 * i], l = extra[5 + 2 * i];
+    const r = extra[5 + 2 * i], l = extra[6 + 2 * i];
     if (r.status === "fulfilled") S.pratings[sid] = r.value;
     if (l.status === "fulfilled") S.lineups[sid] = l.value;
   });
@@ -1425,6 +1579,10 @@ async function init() {
   $("#d-team").insertAdjacentHTML("beforeend", teamOpts);
   $("#d-day").innerHTML = (S.daily?.days ?? []).map((d) => `<option value="${d.date}">${fmtDay(d.date)} · ${d.games} game${d.games === 1 ? "" : "s"}</option>`).join("") || `<option value="">No games yet</option>`;
   ["#d-day", "#d-team", "#d-min"].forEach((sel) => $(sel).addEventListener("input", renderDaily));
+  const prGames = [...new Set((S.props?.props ?? []).map((p) => p.game_id))];
+  $("#pr-game").insertAdjacentHTML("beforeend", prGames.map((g) => `<option value="${esc(g)}">${esc(gameLabel(g))}</option>`).join(""));
+  $("#pr-stat").insertAdjacentHTML("beforeend", Object.entries(S.props?.stat_labels ?? {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""));
+  ["#pr-game", "#pr-stat", "#pr-search", "#pr-edge", "#pr-books"].forEach((sel) => $(sel).addEventListener("input", () => { S.propsView.open = null; renderProps(); }));
   if (!S.logs[S.meta.season]?.length && seasons.includes(S.meta.previous_season)) $("#f-season").value = S.meta.previous_season;
 
   renderFreshness(); renderRail(); renderGames(); renderLeaders(); renderTeams(); renderPlayers();
@@ -1441,7 +1599,7 @@ async function init() {
   $("#fresh-toggle").addEventListener("click", (e) => { const p = $("#fresh-panel"); p.hidden = !p.hidden; e.currentTarget.setAttribute("aria-expanded", String(!p.hidden)); });
   window.addEventListener("resize", () => echarts?.getInstanceByDom($("#trend"))?.resize());
   const start = location.hash.slice(1);
-  if (["games", "daily", "leaders", "teams", "players", "model"].includes(start)) showView(start);
+  if (["games", "props", "daily", "leaders", "teams", "players", "model"].includes(start)) showView(start);
 }
 init();
 </script>
