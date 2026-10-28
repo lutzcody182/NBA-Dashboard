@@ -380,12 +380,25 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
     save_pregame_snapshot(conn, proj, sims)
     try:
         from . import props as props_export
-        out["props"] = props_export.export(conn, out_dir, season, games, proj, sims, _write)
+        res = props_export.export(conn, out_dir, season, games, proj, sims, _write)
+        prop_rows, pulled = res.pop("_rows", []), res.pop("_pulled", {})
+        out["props"] = res
         out["files"].append("props.json")
     except Exception as exc:
         log.exception("Props failed")
         out["errors"].append(f"props: {exc}")
         dbmod.mark_attempt(conn, "odds", False, f"{exc}; {traceback.format_exc(limit=1)}")
+        prop_rows, pulled = [], {}
+    try:
+        from . import bets as bets_export
+        out["bets"] = bets_export.export(conn, out_dir, season, games, sims, prop_rows, pulled, _write)
+        out["files"].append("bets.json")
+        dbmod.mark_attempt(conn, "bets", True, f"{out['bets']['picks']} picks now; {out['bets']['added']} added, "
+                           f"{out['bets']['graded']} graded this run; {out['bets']['ledger']} on the ledger")
+    except Exception as exc:
+        log.exception("Bets failed")
+        out["errors"].append(f"bets: {exc}")
+        dbmod.mark_attempt(conn, "bets", False, f"{exc}; {traceback.format_exc(limit=1)}")
     return out
 
 
