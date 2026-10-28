@@ -338,7 +338,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
   <!-- Bets -->
   <section class="view" id="view-bets" hidden>
     <h2>Recommended bets</h2>
-    <p class="sub">Bets where the model and the market disagree enough to pay at the best price at a state-licensed US sportsbook, sized in units (1 unit = 1% of your bankroll). Each pick is locked the first time it qualifies, at that price and book, and every pick is graded after the game.</p>
+    <p class="sub">Bets where the model and the market disagree enough to pay at the best price at a state-licensed US sportsbook, sized in units (1 unit = 1% of your bankroll). The page rebuilds every 15 minutes on game days with the latest injury news, and odds are pulled about every 75 to 90 minutes from late morning until tip-off. Each pick is locked the first time it qualifies on fresh prices, at that price and book, and every pick is graded after the game. Lines move: check the price at your book before betting.</p>
     <div class="bt-warn" id="bt-warn"></div>
     <div class="bt-cards" id="bt-cards"></div>
     <h3 class="sec" id="bt-today-title">Today's picks</h3>
@@ -866,7 +866,7 @@ function betLabel(b) {
   const team = b.side === "home" ? home : away;
   return b.kind === "moneyline" ? `${abbr(team)} moneyline` : `${abbr(team)} ${b.line > 0 ? "+" : ""}${fmt(b.line)}`;
 }
-const betResultCell = (b) => `<span class="res-${b.status}">${b.status === "open" ? "Open" : b.status[0].toUpperCase() + b.status.slice(1)}</span>`;
+const betResultCell = (b) => `<span class="res-${b.status}">${b.status === "open" ? "Open" : b.status === "live" ? "Not locked" : b.status[0].toUpperCase() + b.status.slice(1)}</span>`;
 function renderBets() {
   const d = S.bets;
   if (!d) { $("#bt-games").innerHTML = `<div class="empty">Bets have not been published yet.</div>`; return; }
@@ -884,18 +884,23 @@ function renderBets() {
   ].join("");
   // today's locked picks, by game
   const today = etDate(0);
+  const keyOf = (b) => b.kind === "prop" ? `${b.game_id}|prop|${b.player_id}|${b.stat}` : `${b.game_id}|${b.kind === "total" ? "total" : "side"}`;
+  const lockedKeys = new Set(led.map(keyOf));
   const upcoming = led.filter((b) => b.game_date >= today && (b.status === "open" || b.game_date === today));
+  // picks that qualify at the latest prices but aren't locked yet (prices too old to lock, or the day's cap reached)
+  const gmeta = (gid) => { const g = S.simByGame[gid]; return g ? { game_date: g.game_date, tip_utc: g.tip_utc, home_team_id: g.home_team_id, away_team_id: g.away_team_id } : {}; };
+  for (const c of d.current ?? []) if (!lockedKeys.has(keyOf(c))) upcoming.push({ ...c, ...gmeta(c.game_id), status: "live", created_at: c.odds_at });
   const byGame = new Map();
   for (const b of upcoming) { if (!byGame.has(b.game_id)) byGame.set(b.game_id, []); byGame.get(b.game_id).push(b); }
   const games = [...byGame.entries()].sort((a, b) => (a[1][0].tip_utc ?? "").localeCompare(b[1][0].tip_utc ?? ""));
-  $("#bt-today-title").textContent = `Picks for upcoming games (${upcoming.length} bets, ${fmt(upcoming.reduce((a, b) => a + b.units, 0), 2)} units)`;
+  $("#bt-today-title").innerHTML = `Picks for upcoming games (${upcoming.length} bets, ${fmt(upcoming.reduce((a, b) => a + b.units, 0), 2)} units) <small style="color:var(--muted);font:500 13px var(--body)">· prices as of ${d.odds_as_of ? fmtStamp(d.odds_as_of) : "—"}${d.next_pull ? ` · odds: ${esc(d.next_pull)}` : ""} · page rebuilt ${fmtStamp(d.generated_at)}</small>`;
   $("#bt-games").innerHTML = games.length ? games.map(([gid, bs]) => {
     const g = bs[0], tot = bs.reduce((a, b) => a + b.units, 0);
     const rows = bs.sort((a, b) => b.ev - a.ev).map((b) => `<div class="bt-row"><span class="what">${betLabel(b)}</span>
       <span class="price">${odds(b.price)} <small style="color:var(--muted)">${esc(bookName(b.book))}</small></span><span class="units">${fmt(b.units, 2)}u</span>
-      <span class="why">Model ${pct(b.p_model)}%, market ${pct(b.p_market)}%, used ${pct(b.p_used)}%; expected return ${signed(100 * b.ev, 1)}% · ${betResultCell(b)} · locked ${fmtStamp(b.created_at)}</span></div>`).join("");
+      <span class="why">Model ${pct(b.p_model)}%, market ${pct(b.p_market)}%, used ${pct(b.p_used)}%; expected return ${signed(100 * b.ev, 1)}% · ${b.status === "live" ? `<span style="color:var(--accent)">Qualifies now, not locked yet</span> (prices from ${fmtStamp(b.created_at)}; it locks when fresh prices still show it)` : `${betResultCell(b)} · locked ${fmtStamp(b.created_at)}`}</span></div>`).join("");
     return `<div class="bt-game"><h3><span>${abbr(g.away_team_id)} @ ${abbr(g.home_team_id)}</span><small>${fmtTime(g.tip_utc)} · ${fmt(tot, 2)} units</small></h3>${rows}</div>`;
-  }).join("") : `<div class="empty">No picks for upcoming games yet. Picks are made when odds are pulled (about noon, 3 PM and 6 PM ET on game days). ${d.current?.length ? `${d.current.length} would qualify at the latest stored prices; they are locked at the next pull.` : "None qualify at the latest stored prices."}</div>`;
+  }).join("") : `<div class="empty">No picks qualify at the latest prices${d.odds_as_of ? ` (${fmtStamp(d.odds_as_of)})` : ""}. Odds are pulled about every 75 to 90 minutes on game days, starting late morning.</div>`;
   // ledger
   const kind = $("#bt-kind").value, status = $("#bt-status").value;
   const rows = led.filter((b) => (!kind || b.kind === kind) && (!status || b.status === status));
@@ -942,7 +947,7 @@ function renderProps() {
   head.innerHTML = [
     `<span>Odds as of <strong>${asOf ? fmtStamp(asOf) : "no pull yet"}</strong></span>`,
     d.credits_remaining != null ? `<span>API credits left this month <strong>${Math.round(d.credits_remaining).toLocaleString()}</strong></span>` : "",
-    `<span>Pulled up to ${d.budget?.max_pulls_per_day ?? 3} times a day, at least ${d.budget?.hours_between ?? 3} hours apart, for games starting within 8 hours</span>`,
+    `<span>Pulled about every 75 to 90 minutes on game days (within a ${d.budget?.daily_cap ?? 450}-credit daily budget), for games starting within 8 hours</span>`,
     why ? `<span>${why}</span>` : "",
   ].join("");
   const gid = $("#pr-game").value, stat = $("#pr-stat").value, q = $("#pr-search").value.trim().toLowerCase();
