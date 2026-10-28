@@ -178,8 +178,10 @@ def model_inputs(proj: dict, sims: dict) -> dict:
                 # p10/p90 are the minutes model's range around minutes-if-he-plays
                 p10 = p.get("p10") if p.get("p10") is not None else m_if - 6
                 p90 = p.get("p90") if p.get("p90") is not None else m_if + 6
+                ap = p.get("appear") or {}
                 out[key] = {"min": m_if, "p10": min(p10, m_if), "p90": max(p90, m_if), "rates": rates,
-                            "status": p.get("status"), "name": p.get("name")}
+                            "status": p.get("status"), "name": p.get("name"),
+                            "games": int((ap.get("played") or 0) + (ap.get("prev_played") or 0))}
     return out
 
 
@@ -201,7 +203,7 @@ def compare(rows: list, inputs: dict, disp: dict) -> list:
                       "p_under": round(pu, 4), "p_push": round(push, 4),
                       "edge_over": round(po_np - fair_o, 4) if po_np is not None else None,
                       "ev_over": round(po * (dec_o - 1) - pu, 4), "ev_under": round(pu * (dec_u - 1) - po, 4),
-                      "status": x["status"]}
+                      "status": x["status"], "games": x.get("games")}
         out.append(r)
     return out
 
