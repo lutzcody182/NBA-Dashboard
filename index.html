@@ -243,6 +243,23 @@ tr.sel { background: var(--panel-2); }
   .profile, .model-grid { grid-template-columns: minmax(0, 1fr); }
   .tabs { flex-wrap: wrap; }
 }
+/* Bets */
+.bt-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr)); gap: 12px; margin-bottom: 18px; }
+.bt-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 14px; }
+.bt-card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; font-family: var(--cond); font-weight: 600; }
+.bt-card .v { font: 700 24px var(--cond); font-variant-numeric: tabular-nums; }
+.bt-card .s { color: var(--muted); font-size: 12px; }
+.bt-games { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr)); gap: 12px; margin-bottom: 18px; }
+.bt-game { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 14px; min-width: 0; }
+.bt-game h3 { margin: 0 0 6px; font: 700 17px var(--cond); display: flex; justify-content: space-between; gap: 8px; }
+.bt-game h3 small { color: var(--muted); font: 500 13px var(--body); }
+.bt-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 12px; padding: 7px 0; border-top: 1px solid var(--line); align-items: baseline; }
+.bt-row .what { font-weight: 600; }
+.bt-row .units { font: 700 18px var(--cond); color: var(--accent); }
+.bt-row .price { font-family: var(--cond); font-size: 15px; }
+.bt-row .why { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.res-won { color: var(--good); } .res-lost { color: var(--bad); } .res-push, .res-void, .res-open { color: var(--muted); }
+.bt-warn { border-left: 3px solid var(--accent); padding: 8px 12px; background: var(--panel); color: var(--muted); font-size: 13px; margin: 0 0 16px; max-width: 90ch; }
 /* Props */
 .pr-head { display: flex; flex-wrap: wrap; gap: 8px 22px; color: var(--muted); font-size: 13px; margin: -4px 0 14px; }
 .pr-head strong { color: var(--text); font-weight: 600; }
@@ -284,6 +301,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
   <h1 class="brand">NBA Court <span>Lab</span></h1>
   <nav class="tabs" role="tablist" aria-label="Sections">
     <button class="tab" role="tab" data-view="games" aria-selected="true">Games</button>
+    <button class="tab" role="tab" data-view="bets" aria-selected="false">Bets</button>
     <button class="tab" role="tab" data-view="props" aria-selected="false">Props</button>
     <button class="tab" role="tab" data-view="daily" aria-selected="false">Daily</button>
     <button class="tab" role="tab" data-view="leaders" aria-selected="false">Leaders</button>
@@ -315,6 +333,27 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     <h2 id="games-title">Games</h2>
     <p class="sub">Season ratings for both teams, side by side, and each team's projected rotation from the latest official injury report. Opponent-adjusted ratings correct for who each team has played. The bar under each game is 10,000 simulated games: who wins how often, the projected score, spread and total. Open the simulation for the spread of outcomes, what moved it, and player projections.</p>
     <div class="games" id="games"></div>
+  </section>
+
+  <!-- Bets -->
+  <section class="view" id="view-bets" hidden>
+    <h2>Recommended bets</h2>
+    <p class="sub">Bets where the model and the market disagree enough to pay at the best price at a state-licensed US sportsbook, sized in units (1 unit = 1% of your bankroll). Each pick is locked the first time it qualifies, at that price and book, and every pick is graded after the game.</p>
+    <div class="bt-warn" id="bt-warn"></div>
+    <div class="bt-cards" id="bt-cards"></div>
+    <h3 class="sec" id="bt-today-title">Today's picks</h3>
+    <div class="bt-games" id="bt-games"></div>
+    <h3 class="sec">Every recommended bet</h3>
+    <div class="controls">
+      <label class="ctl">Type<select id="bt-kind"><option value="">All</option><option value="prop">Player props</option><option value="moneyline">Moneyline</option><option value="spread">Spread</option><option value="total">Total</option></select></label>
+      <label class="ctl">Result<select id="bt-status"><option value="">All</option><option value="open">Open</option><option value="won">Won</option><option value="lost">Lost</option><option value="push">Push</option><option value="void">Void</option></select></label>
+    </div>
+    <div class="table-wrap"><table id="bt-table"></table></div>
+    <p class="count" id="bt-count"></p>
+    <div class="pr-grid">
+      <div class="panel"><h3>Results by bet type</h3><div id="bt-kinds"></div></div>
+      <div class="panel"><h3>How picks and stakes are chosen</h3><div id="bt-rules"></div></div>
+    </div>
   </section>
 
   <!-- Props -->
@@ -471,7 +510,7 @@ const S = {
   day: "today", focusGame: null,
   leaders: { sort: "pts", dir: -1 },
   daily: null, dailyView: { sort: "gmsc", dir: -1 },
-  props: null, propsView: { sort: "absedge", dir: -1, open: null },
+  bets: null, props: null, propsView: { sort: "absedge", dir: -1, open: null },
   teamsView: { group: "overview", sort: "adj_net", dir: -1, team: null, roll: 10 },
   proj: null, projByGame: {}, scenario: {}, pratings: {}, lineups: {}, sims: null, simByGame: {}, sq: {},
   playersView: { group: "overview", sort: "overall", dir: -1, player: null, all: false },
@@ -816,6 +855,65 @@ function renderLeaders() {
   }));
   const range = from ? (from === to ? fmtDay(from) : `${fmtDay(from)} to ${fmtDay(to)}`) : `the ${season} season`;
   $("#leaders-count").textContent = `${agg.length} players for ${range}${agg.length > shown.length ? `, showing the top ${shown.length}` : ""}. Baseline compares ${baseStat.toUpperCase()} per game.`;
+}
+
+// ---------- bets ----------
+const STAT_WORD = { pts: "points", reb: "rebounds", ast: "assists", fg3m: "threes", pra: "pts+reb+ast", pr: "pts+reb", pa: "pts+ast", ra: "reb+ast" };
+function betLabel(b) {
+  const home = b.home_team_id ?? S.simByGame[b.game_id]?.home_team_id, away = b.away_team_id ?? S.simByGame[b.game_id]?.away_team_id;
+  if (b.kind === "prop") return `${esc(b.player ?? pname(b.player_id))} ${b.side} ${fmt(b.line)} ${STAT_WORD[b.stat] ?? b.stat}`;
+  if (b.kind === "total") return `${abbr(away)} @ ${abbr(home)} ${b.side} ${fmt(b.line)}`;
+  const team = b.side === "home" ? home : away;
+  return b.kind === "moneyline" ? `${abbr(team)} moneyline` : `${abbr(team)} ${b.line > 0 ? "+" : ""}${fmt(b.line)}`;
+}
+const betResultCell = (b) => `<span class="res-${b.status}">${b.status === "open" ? "Open" : b.status[0].toUpperCase() + b.status.slice(1)}</span>`;
+function renderBets() {
+  const d = S.bets;
+  if (!d) { $("#bt-games").innerHTML = `<div class="empty">Bets have not been published yet.</div>`; return; }
+  const st = d.settings, sm = d.summary ?? {};
+  $("#bt-warn").innerHTML = `The model has no live track record yet, so every pick uses a chance halfway between the model's and the market's, and stakes are a quarter of the Kelly amount. Treat this as a test of the model, not proven advice: the ledger below and the "beat the closing line" rate are how you'll know whether it has an edge. Bet only what you can afford to lose. If gambling stops being fun, call or text 1-800-GAMBLER.`;
+  const card = (k, v, s, cls = "") => `<div class="bt-card"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s}</div></div>`;
+  const led = fromCols(d.ledger);
+  const open = led.filter((b) => b.status === "open");
+  $("#bt-cards").innerHTML = [
+    card("Record", sm.graded ? `${sm.won}-${sm.lost}${sm.push ? "-" + sm.push : ""}` : "—", `${sm.graded ?? 0} graded of ${sm.bets ?? 0}`),
+    card("Units", sm.graded ? signed(sm.units, 2) : "—", sm.graded ? `${fmt(sm.units_risked, 2)} units risked` : "nothing graded yet", sm.units > 0 ? "res-won" : sm.units < 0 ? "res-lost" : ""),
+    card("Return", sm.roi != null ? signed(100 * sm.roi, 1) + "%" : "—", sm.roi_se != null ? `± ${(100 * sm.roi_se).toFixed(1)} (one standard error)` : "per unit risked"),
+    card("Beat the closing line", sm.beat_close != null ? pct(sm.beat_close, 0) + "%" : "—", sm.avg_clv != null ? `average ${signed(100 * sm.avg_clv, 1)} pts of chance, ${sm.clv_n} bets` : "the earliest sign of a real edge"),
+    card("Open", `${open.length}`, `${fmt(open.reduce((a, b) => a + b.units, 0), 2)} units waiting on results`),
+  ].join("");
+  // today's locked picks, by game
+  const today = etDate(0);
+  const upcoming = led.filter((b) => b.game_date >= today && (b.status === "open" || b.game_date === today));
+  const byGame = new Map();
+  for (const b of upcoming) { if (!byGame.has(b.game_id)) byGame.set(b.game_id, []); byGame.get(b.game_id).push(b); }
+  const games = [...byGame.entries()].sort((a, b) => (a[1][0].tip_utc ?? "").localeCompare(b[1][0].tip_utc ?? ""));
+  $("#bt-today-title").textContent = `Picks for upcoming games (${upcoming.length} bets, ${fmt(upcoming.reduce((a, b) => a + b.units, 0), 2)} units)`;
+  $("#bt-games").innerHTML = games.length ? games.map(([gid, bs]) => {
+    const g = bs[0], tot = bs.reduce((a, b) => a + b.units, 0);
+    const rows = bs.sort((a, b) => b.ev - a.ev).map((b) => `<div class="bt-row"><span class="what">${betLabel(b)}</span>
+      <span class="price">${odds(b.price)} <small style="color:var(--muted)">${esc(bookName(b.book))}</small></span><span class="units">${fmt(b.units, 2)}u</span>
+      <span class="why">Model ${pct(b.p_model)}%, market ${pct(b.p_market)}%, used ${pct(b.p_used)}%; expected return ${signed(100 * b.ev, 1)}% · ${betResultCell(b)} · locked ${fmtStamp(b.created_at)}</span></div>`).join("");
+    return `<div class="bt-game"><h3><span>${abbr(g.away_team_id)} @ ${abbr(g.home_team_id)}</span><small>${fmtTime(g.tip_utc)} · ${fmt(tot, 2)} units</small></h3>${rows}</div>`;
+  }).join("") : `<div class="empty">No picks for upcoming games yet. Picks are made when odds are pulled (about noon, 3 PM and 6 PM ET on game days). ${d.current?.length ? `${d.current.length} would qualify at the latest stored prices; they are locked at the next pull.` : "None qualify at the latest stored prices."}</div>`;
+  // ledger
+  const kind = $("#bt-kind").value, status = $("#bt-status").value;
+  const rows = led.filter((b) => (!kind || b.kind === kind) && (!status || b.status === status));
+  const head = `<thead><tr><th class="l">Date</th><th class="l">Bet</th><th class="l">Type</th><th>Price</th><th class="l">Book</th><th>Units</th><th>Model</th><th>Market</th><th>Exp. return</th><th class="l">Result</th><th>Actual</th><th>P/L</th><th title="Market's fair chance for this side at the last pull before tip-off, minus when the bet was made">Closing line</th></tr></thead>`;
+  const body = rows.map((b) => `<tr><td class="l">${fmtDay(b.game_date)}</td><td class="l">${betLabel(b)}</td><td class="l">${esc({ prop: "Prop", moneyline: "Moneyline", spread: "Spread", total: "Total" }[b.kind])}</td>
+    <td>${odds(b.price)}</td><td class="l">${esc(bookName(b.book))}</td><td>${fmt(b.units, 2)}</td><td>${pct(b.p_model)}%</td><td>${pct(b.p_market)}%</td><td>${signed(100 * b.ev, 1)}%</td>
+    <td class="l">${betResultCell(b)}</td><td>${b.result == null ? "—" : b.kind === "total" || b.kind === "prop" ? fmt(b.result, 0) : signed(b.result, 0)}</td>
+    <td class="${b.pnl > 0 ? "res-won" : b.pnl < 0 ? "res-lost" : ""}">${b.pnl == null ? "—" : signed(b.pnl, 2)}</td><td>${b.clv == null ? "—" : signed(100 * b.clv, 1)}</td></tr>`).join("");
+  $("#bt-table").innerHTML = head + `<tbody>${body || `<tr><td class="empty" colspan="13">No bets yet.</td></tr>`}</tbody>`;
+  $("#bt-count").textContent = `${rows.length} bets. Result for spreads and moneylines is the home team's final margin.`;
+  const kinds = Object.entries(d.by_kind ?? {});
+  $("#bt-kinds").innerHTML = kinds.length ? `<table><thead><tr><th class="l">Type</th><th>Bets</th><th>Record</th><th>Units</th><th>Return</th><th>Beat close</th></tr></thead><tbody>${kinds.map(([k, v]) => `<tr><td class="l">${esc({ prop: "Player props", moneyline: "Moneyline", spread: "Spread", total: "Total" }[k] ?? k)}</td><td>${v.bets}</td><td>${v.graded ? `${v.won}-${v.lost}${v.push ? "-" + v.push : ""}` : "—"}</td><td>${v.graded ? signed(v.units, 2) : "—"}</td><td>${v.roi != null ? signed(100 * v.roi, 1) + "%" : "—"}</td><td>${v.beat_close != null ? pct(v.beat_close, 0) + "%" : "—"}</td></tr>`).join("")}</tbody></table>
+    <p class="pr-note">A few dozen bets says almost nothing about skill; even a few hundred leaves a wide range. Beating the closing line (the market moving toward the pick after it was made) shows up much sooner than profit does.</p>` : `<p class="pr-note">Nothing on the ledger yet.</p>`;
+  $("#bt-rules").innerHTML = `<p class="pr-note"><strong>Books:</strong> state-licensed US sportsbooks only (${esc(st.legal_books.filter((b) => BOOK_NAME[b]).map(bookName).filter((v, i, a) => a.indexOf(v) === i).join(", "))}, and others where licensed). Offshore books in the feed are ignored. Check which of these operate in your state.</p>
+    <p class="pr-note"><strong>Chances:</strong> props use the props model; moneylines use the simulation's win chance; spreads and totals use a normal curve around the simulated margin and total, as wide as the simulation's misses on last season's replay. The chance used for a bet is ${Math.round(100 * st.blend)}% model and ${Math.round(100 * (1 - st.blend))}% market.</p>
+    <p class="pr-note"><strong>A bet needs:</strong> the model rating the side ${Math.round(100 * st.min_gap)} to ${Math.round(100 * st.max_gap)} points above the market (bigger gaps usually mean news the model missed), an expected return of ${Math.round(100 * st.min_ev)}%+ at the best price, ${st.min_books}+ legal books quoting it, a price between ${st.price_range[0]} and +${st.price_range[1]}, and for props a player with 5+ games of history who isn't questionable or doubtful.</p>
+    <p class="pr-note"><strong>Stakes:</strong> ${Math.round(100 * st.kelly)}% of the Kelly stake, 1 unit = ${st.unit_pct}% of bankroll, rounded to 0.25 units, at most ${st.max_units} units a bet, ${st.max_game_units} a game, and ${st.max_day_picks} bets or ${st.max_day_units} units a day. One prop per player and one side bet (moneyline or spread) per game, since those move together.</p>
+    <p class="pr-note">Not financial or betting advice.</p>`;
 }
 
 // ---------- props ----------
@@ -1525,6 +1623,7 @@ function showView(name) {
   if (name === "model") { renderModel(); renderSimModel(); }
   if (name === "daily") renderDaily();
   if (name === "props") renderProps();
+  if (name === "bets") renderBets();
   history.replaceState(null, "", "#" + name);
 }
 
@@ -1562,6 +1661,7 @@ async function init() {
     getJSON("projections.json"), getJSON("sims.json"), getJSON(`teams/shot_quality_${S.meta.season}.json`),
     getJSON("daily.json").then((d) => { S.daily = d; }),
     getJSON("props.json").then((d) => { S.props = d; }),
+    getJSON("bets.json").then((d) => { S.bets = d; }),
     ...[S.meta.season, S.meta.previous_season].flatMap((sid) => [getJSON(`players/ratings_${sid}.json`), getJSON(`teams/lineups_${sid}.json`)]),
   ]);
   S.proj = extra[0].status === "fulfilled" ? extra[0].value : null;
@@ -1570,7 +1670,7 @@ async function init() {
   S.simByGame = Object.fromEntries((S.sims?.games ?? []).map((g) => [g.game_id, g]));
   if (extra[2].status === "fulfilled") S.sq[S.meta.season] = extra[2].value;
   [S.meta.season, S.meta.previous_season].forEach((sid, i) => {
-    const r = extra[5 + 2 * i], l = extra[6 + 2 * i];
+    const r = extra[6 + 2 * i], l = extra[7 + 2 * i];
     if (r.status === "fulfilled") S.pratings[sid] = r.value;
     if (l.status === "fulfilled") S.lineups[sid] = l.value;
   });
@@ -1592,6 +1692,7 @@ async function init() {
   const prGames = [...new Set((S.props?.props ?? []).map((p) => p.game_id))];
   $("#pr-game").insertAdjacentHTML("beforeend", prGames.map((g) => `<option value="${esc(g)}">${esc(gameLabel(g))}</option>`).join(""));
   $("#pr-stat").insertAdjacentHTML("beforeend", Object.entries(S.props?.stat_labels ?? {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""));
+  ["#bt-kind", "#bt-status"].forEach((sel) => $(sel).addEventListener("input", renderBets));
   ["#pr-game", "#pr-stat", "#pr-search", "#pr-edge", "#pr-books", "#pr-hist"].forEach((sel) => $(sel).addEventListener("input", () => { S.propsView.open = null; renderProps(); }));
   if (!S.logs[S.meta.season]?.length && seasons.includes(S.meta.previous_season)) $("#f-season").value = S.meta.previous_season;
 
@@ -1609,7 +1710,7 @@ async function init() {
   $("#fresh-toggle").addEventListener("click", (e) => { const p = $("#fresh-panel"); p.hidden = !p.hidden; e.currentTarget.setAttribute("aria-expanded", String(!p.hidden)); });
   window.addEventListener("resize", () => echarts?.getInstanceByDom($("#trend"))?.resize());
   const start = location.hash.slice(1);
-  if (["games", "props", "daily", "leaders", "teams", "players", "model"].includes(start)) showView(start);
+  if (["games", "bets", "props", "daily", "leaders", "teams", "players", "model"].includes(start)) showView(start);
 }
 init();
 </script>
