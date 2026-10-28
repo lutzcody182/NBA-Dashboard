@@ -243,6 +243,23 @@ tr.sel { background: var(--panel-2); }
   .profile, .model-grid { grid-template-columns: minmax(0, 1fr); }
   .tabs { flex-wrap: wrap; }
 }
+/* Daily */
+.lb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(212px, 100%), 1fr)); gap: 12px; margin-bottom: 18px; }
+.lb { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 12px 8px; min-width: 0; }
+.lb h3 { margin: 0; font: 700 15px var(--cond); letter-spacing: 0.02em; text-transform: uppercase; color: var(--muted); }
+.lb h3 small { text-transform: none; letter-spacing: 0; font: 500 12px var(--body); margin-left: 4px; }
+.lb ol { list-style: none; margin: 6px 0 0; padding: 0; }
+.lb li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; padding: 3px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.lb li:first-child { border-top: 0; }
+.lb li .rk { color: var(--muted); font: 600 13px var(--cond); }
+.lb li .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb li .who small { color: var(--muted); margin-left: 5px; font-size: 12px; }
+.lb li .v { font: 700 17px var(--cond); font-variant-numeric: tabular-nums; }
+.lb li:first-child .v { color: var(--accent); }
+.lb li .ctx { grid-column: 2 / -1; color: var(--muted); font-size: 12px; margin-top: -2px; }
+.lb .none { color: var(--muted); font-size: 13px; padding: 6px 0; }
+h3.sec { font: 700 19px var(--cond); margin: 6px 0 4px; }
+p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 80ch; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
 </style>
 </head>
@@ -251,6 +268,7 @@ tr.sel { background: var(--panel-2); }
   <h1 class="brand">NBA Court <span>Lab</span></h1>
   <nav class="tabs" role="tablist" aria-label="Sections">
     <button class="tab" role="tab" data-view="games" aria-selected="true">Games</button>
+    <button class="tab" role="tab" data-view="daily" aria-selected="false">Daily</button>
     <button class="tab" role="tab" data-view="leaders" aria-selected="false">Leaders</button>
     <button class="tab" role="tab" data-view="teams" aria-selected="false">Teams</button>
     <button class="tab" role="tab" data-view="players" aria-selected="false">Players</button>
@@ -280,6 +298,24 @@ tr.sel { background: var(--panel-2); }
     <h2 id="games-title">Games</h2>
     <p class="sub">Season ratings for both teams, side by side, and each team's projected rotation from the latest official injury report. Opponent-adjusted ratings correct for who each team has played. The bar under each game is 10,000 simulated games: who wins how often, the projected score, spread and total. Open the simulation for the spread of outcomes, what moved it, and player projections.</p>
     <div class="games" id="games"></div>
+  </section>
+
+  <!-- Daily -->
+  <section class="view" id="view-daily" hidden>
+    <h2 id="daily-title">Daily leaders</h2>
+    <p class="sub">The best lines from one night of games, with the efficiency and impact numbers behind them, and the changes in role that tend to carry into the next games. Rate leaders need a minimum workload so a 2-for-2 night doesn't top the list.</p>
+    <div class="controls">
+      <label class="ctl">Game day<select id="d-day"></select></label>
+      <label class="ctl">Team<select id="d-team"><option value="">All teams</option></select></label>
+      <label class="ctl">Table: min. minutes<input id="d-min" type="number" min="0" max="48" value="10"></label>
+    </div>
+    <div class="lb-grid" id="d-cards"></div>
+    <h3 class="sec">Worth knowing going forward</h3>
+    <p class="sec-sub">Minutes and starting roles change slowly and carry into future games far better than one night's shooting does, so these are the changes to watch. "Previous 10" is each player's last 10 games before this one, this season and last.</p>
+    <div class="lb-grid" id="d-notes"></div>
+    <h3 class="sec">Every player</h3>
+    <div class="table-wrap"><table id="d-table"></table></div>
+    <p class="count" id="d-count"></p>
   </section>
 
   <!-- Leaders -->
@@ -396,6 +432,7 @@ const S = {
   logs: {}, ratings: {}, teamLogs: {},
   day: "today", focusGame: null,
   leaders: { sort: "pts", dir: -1 },
+  daily: null, dailyView: { sort: "gmsc", dir: -1 },
   teamsView: { group: "overview", sort: "adj_net", dir: -1, team: null, roll: 10 },
   proj: null, projByGame: {}, scenario: {}, pratings: {}, lineups: {}, sims: null, simByGame: {}, sq: {},
   playersView: { group: "overview", sort: "overall", dir: -1, player: null, all: false },
@@ -740,6 +777,120 @@ function renderLeaders() {
   }));
   const range = from ? (from === to ? fmtDay(from) : `${fmtDay(from)} to ${fmtDay(to)}`) : `the ${season} season`;
   $("#leaders-count").textContent = `${agg.length} players for ${range}${agg.length > shown.length ? `, showing the top ${shown.length}` : ""}. Baseline compares ${baseStat.toUpperCase()} per game.`;
+}
+
+// ---------- daily ----------
+const D_CARDS = [
+  { k: "pts", label: "Points", ctx: (r) => `${r.fgm}-${r.fga} FG, ${r.fg3m}-${r.fg3a} 3P, ${r.ftm}-${r.fta} FT` },
+  { k: "reb", label: "Rebounds", ctx: (r) => `${r.oreb} offensive, ${r.dreb} defensive` },
+  { k: "ast", label: "Assists", ctx: (r) => `${r.tov} turnovers` },
+  { k: "fg3m", label: "Threes made", ctx: (r) => `${r.fg3m}-${r.fg3a}` },
+  { k: "stl", label: "Steals" }, { k: "blk", label: "Blocks" },
+  { k: "pra", label: "Pts + reb + ast", ctx: (r) => `${r.pts} / ${r.reb} / ${r.ast}` },
+  { k: "gmsc", label: "Game score", d: 1, note: "one-number box score", ctx: (r) => `${r.pts} pts, ${r.reb} reb, ${r.ast} ast` },
+  { k: "ts", label: "True shooting", rate: true, note: "15+ shot attempts", min: (r) => r.fga + 0.44 * r.fta >= 15, ctx: (r) => `${r.pts} pts on ${r.fga} FGA, ${r.fta} FTA` },
+  { k: "usg", label: "Usage", rate: true, note: "20+ minutes", min: (r) => r.min >= 20, ctx: (r) => `${r.pts} pts, TS ${pct(r.ts)}%` },
+  { k: "plus_minus", label: "Plus-minus", signed: true, ctx: (r) => `${fmt(r.min)} minutes` },
+  { k: "on_net", label: "On-court net rating", signed: true, d: 1, note: "20+ minutes", min: (r) => r.min >= 20 && r.on_net != null, ctx: (r) => `per 100 possessions, ${fmt(r.on_poss, 0)} possessions` },
+];
+const D_COLS = [
+  ["min", "MIN", 1], ["pts", "PTS"], ["reb", "REB"], ["ast", "AST"], ["stl", "STL"], ["blk", "BLK"], ["tov", "TOV"],
+  ["fg", "FG"], ["fg3", "3P"], ["ft", "FT"], ["ts", "TS%", "rate"], ["efg", "eFG%", "rate"], ["usg", "USG%", "rate"],
+  ["gmsc", "GmSc", 1], ["plus_minus", "+/-", "signed"], ["on_net", "On net", "signed1"],
+  ["dmin", "Min vs prev 10", "signed1"], ["proj_min", "Proj. min", 1], ["proj_pts", "Proj. pts", 1],
+];
+const D_TITLES = {
+  ts: "True shooting: points per shooting possession, counting free throws", efg: "Effective FG%: field goals with threes worth 1.5",
+  usg: "Share of team plays used while on the floor (shots, free-throw trips, turnovers)",
+  gmsc: "Hollinger game score: a weighted box score, about 10 is average and 40 is a great game",
+  on_net: "Team points per 100 possessions minus the opponent's, while he was on the floor",
+  dmin: "Minutes tonight minus his average over the previous 10 games",
+  proj_min: "Expected minutes from the last projection before tip-off", proj_pts: "Projected points from the last projection before tip-off",
+};
+function dailyRows(day) {
+  const team = $("#d-team").value;
+  return fromCols(day.cols).map((r) => {
+    const [hs, as] = (day.scores?.[r.game_id] ?? "").split("-").map(Number);
+    r.margin = Number.isFinite(hs) && Number.isFinite(as) ? (r.home ? hs - as : as - hs) : null;
+    r.dmin = r.l10_min != null && r.prior_games >= 3 ? r.min - r.l10_min : null;
+    r.fg = r.fga ? r.fgm / r.fga : null; r.fg3 = r.fg3a ? r.fg3m / r.fg3a : null; r.ft = r.fta ? r.ftm / r.fta : null;
+    return r;
+  }).filter((r) => !team || String(r.team_id) === team);
+}
+function dWho(r) {
+  const p = S.players[r.player_id] ?? {};
+  return `<span class="who" title="${esc(p.name ?? "")}, ${abbr(r.team_id)} ${r.home ? "vs" : "@"} ${abbr(r.opp_id)}">${esc(p.name ?? r.player_id)}<small>${abbr(r.team_id)}</small></span>`;
+}
+function dVal(v, c) {
+  if (c.rate) return pct(v); if (c.signed) return signed(v, c.d ?? 0); return fmt(v, c.d ?? 0);
+}
+function dCard(title, note, list, valFn, ctxFn) {
+  const items = list.map((r, i) => `<li><span class="rk">${i + 1}</span>${dWho(r)}<span class="v">${valFn(r)}</span>${ctxFn ? `<span class="ctx">${ctxFn(r)}</span>` : ""}</li>`).join("");
+  return `<div class="lb"><h3>${esc(title)}${note ? `<small>${esc(note)}</small>` : ""}</h3>${items ? `<ol>${items}</ol>` : `<div class="none">Nobody this day.</div>`}</div>`;
+}
+function renderDaily() {
+  const days = S.daily?.days ?? [];
+  if (!days.length) { $("#d-cards").innerHTML = `<div class="empty">No games played yet this season.</div>`; return; }
+  const day = days.find((d) => d.date === $("#d-day").value) ?? days[0];
+  const rows = dailyRows(day);
+  $("#daily-title").textContent = `Daily leaders: ${fmtDay(day.date)}`;
+  const top = (arr, key, n = 5, asc = false) => arr.filter((r) => r[key] != null).sort((a, b) => asc ? a[key] - b[key] : b[key] - a[key]).slice(0, n);
+  $("#d-cards").innerHTML = D_CARDS.map((c) => dCard(c.label, c.note, top(c.min ? rows.filter(c.min) : rows, c.k), (r) => dVal(r[c.k], c), c.ctx)).join("");
+
+  // what changed
+  const est = rows.filter((r) => r.dmin != null);
+  const up = top(est.filter((r) => r.dmin >= 6), "dmin");
+  const down = top(est.filter((r) => r.l10_min >= 20 && r.dmin <= -6), "dmin", 5, true);
+  const newStart = rows.filter((r) => r.started && r.prior_games >= 3 && r.l10_starts <= Math.min(r.prior_games, 10) * 0.3)
+    .sort((a, b) => b.min - a.min).slice(0, 5);
+  const benched = rows.filter((r) => !r.started && r.prior_games >= 3 && r.l10_starts >= Math.min(r.prior_games, 10) * 0.7)
+    .sort((a, b) => b.l10_starts - a.l10_starts).slice(0, 5);
+  const proj = rows.filter((r) => r.proj_min != null);
+  const projKey = proj.some((r) => r.proj_pts != null) ? "pts" : "min";
+  proj.forEach((r) => (r.dproj = projKey === "pts" ? (r.proj_pts != null ? r.pts - r.proj_pts : null) : r.min - r.proj_min));
+  const beat = top(proj, "dproj"), missed = top(proj, "dproj", 5, true);
+  const s1 = (v) => signed(v, 1);
+  const result = (r) => r.margin == null ? "" : `; ${r.margin > 0 ? "won" : "lost"} by ${Math.abs(r.margin)}${Math.abs(r.margin) >= 20 ? " (blowout)" : ""}`;
+  const prev = (r) => `${fmt(r.min)} min vs ${fmt(r.l10_min)} before${result(r)}`;
+  const projCtx = (r) => (projKey === "pts" ? `${r.pts} pts, projected ${fmt(r.proj_pts)}` : `${fmt(r.min)} min, projected ${fmt(r.proj_min)}`) + result(r);
+  $("#d-notes").innerHTML = [
+    dCard("Minutes up", "6+ over his previous 10", up, (r) => s1(r.dmin), prev),
+    dCard("Minutes down", "regulars, 6+ under", down, (r) => s1(r.dmin), prev),
+    dCard("New starters", "started at most 3 of previous 10", newStart, (r) => `${fmt(r.min, 0)} min`, (r) => `${r.l10_starts} starts in previous ${Math.min(r.prior_games, 10)}; ${r.pts} pts`),
+    dCard("Moved to the bench", "started 7+ of previous 10", benched, (r) => `${fmt(r.min, 0)} min`, (r) => `${r.l10_starts} starts in previous ${Math.min(r.prior_games, 10)}`),
+    proj.length ? dCard(projKey === "pts" ? "Beat projected points" : "More minutes than projected", "last pregame projection", beat, (r) => s1(r.dproj), projCtx) : "",
+    proj.length ? dCard(projKey === "pts" ? "Below projected points" : "Fewer minutes than projected", "last pregame projection", missed, (r) => s1(r.dproj), projCtx) : "",
+  ].join("");
+
+  // table
+  const minM = Number($("#d-min").value) || 0;
+  const { sort, dir } = S.dailyView;
+  const tr = rows.filter((r) => r.min >= minM).sort((a, b) => {
+    const x = a[sort], y = b[sort]; if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
+    return dir > 0 ? x - y : y - x;
+  });
+  const cell = (r, [k, , kind]) => {
+    if (k === "fg") return `${r.fgm}-${r.fga}`; if (k === "fg3") return `${r.fg3m}-${r.fg3a}`; if (k === "ft") return `${r.ftm}-${r.fta}`;
+    const v = r[k];
+    if (kind === "rate") return pct(v); if (kind === "signed") return signed(v, 0); if (kind === "signed1") return signed(v, 1);
+    return fmt(v, typeof kind === "number" ? kind : 0);
+  };
+  const head = `<thead><tr><th class="l">Player</th><th class="l">Game</th>${D_COLS.map((c) => `<th data-k="${c[0]}" title="${esc(D_TITLES[c[0]] ?? "")}" ${c[0] === sort ? `aria-sort="${dir < 0 ? "descending" : "ascending"}"` : ""}>${c[1]}</th>`).join("")}</tr></thead>`;
+  const body = tr.map((r) => {
+    const p = S.players[r.player_id] ?? {};
+    const sc = day.scores?.[r.game_id];
+    const [hs, as] = (sc ?? "").split("-").map(Number);
+    const res = sc ? ((r.home ? hs > as : as > hs) ? "W " : "L ") + (r.home ? `${hs}-${as}` : `${as}-${hs}`) : "";
+    return `<tr><td class="name">${esc(p.name ?? r.player_id)}<small>${abbr(r.team_id)}${r.started ? "" : " bench"}</small></td><td class="l">${r.home ? "vs" : "@"} ${abbr(r.opp_id)} <small style="color:var(--muted)">${res}</small></td>${D_COLS.map((c) => `<td>${cell(r, c)}</td>`).join("")}</tr>`;
+  }).join("");
+  const t = $("#d-table");
+  t.innerHTML = head + `<tbody>${body || `<tr><td class="empty" colspan="${D_COLS.length + 2}">No players match.</td></tr>`}</tbody>`;
+  t.querySelectorAll("th[data-k]").forEach((th) => th.addEventListener("click", () => {
+    const k = th.dataset.k;
+    S.dailyView = { sort: k, dir: S.dailyView.sort === k ? -S.dailyView.dir : -1 };
+    renderDaily();
+  }));
+  $("#d-count").textContent = `${tr.length} of ${rows.length} players from ${day.games} game${day.games === 1 ? "" : "s"}. Hover a column heading for what it measures.`;
 }
 
 // ---------- teams ----------
@@ -1210,6 +1361,7 @@ function showView(name) {
   document.querySelectorAll(".view").forEach((v) => (v.hidden = v.id !== "view-" + name));
   if (name === "teams" && S.teamsView.team) setTimeout(() => echarts?.getInstanceByDom($("#trend"))?.resize(), 0);
   if (name === "model") { renderModel(); renderSimModel(); }
+  if (name === "daily") renderDaily();
   history.replaceState(null, "", "#" + name);
 }
 
@@ -1245,6 +1397,7 @@ async function init() {
   await Promise.all([loadSeasonFiles(S.meta.season), loadSeasonFiles(S.meta.previous_season)]);
   const extra = await Promise.allSettled([
     getJSON("projections.json"), getJSON("sims.json"), getJSON(`teams/shot_quality_${S.meta.season}.json`),
+    getJSON("daily.json").then((d) => { S.daily = d; }),
     ...[S.meta.season, S.meta.previous_season].flatMap((sid) => [getJSON(`players/ratings_${sid}.json`), getJSON(`teams/lineups_${sid}.json`)]),
   ]);
   S.proj = extra[0].status === "fulfilled" ? extra[0].value : null;
@@ -1253,7 +1406,7 @@ async function init() {
   S.simByGame = Object.fromEntries((S.sims?.games ?? []).map((g) => [g.game_id, g]));
   if (extra[2].status === "fulfilled") S.sq[S.meta.season] = extra[2].value;
   [S.meta.season, S.meta.previous_season].forEach((sid, i) => {
-    const r = extra[3 + 2 * i], l = extra[4 + 2 * i];
+    const r = extra[4 + 2 * i], l = extra[5 + 2 * i];
     if (r.status === "fulfilled") S.pratings[sid] = r.value;
     if (l.status === "fulfilled") S.lineups[sid] = l.value;
   });
@@ -1269,6 +1422,9 @@ async function init() {
   $("#f-team").insertAdjacentHTML("beforeend", teamOpts);
   $("#f-opp").insertAdjacentHTML("beforeend", teamOpts);
   $("#p-team").insertAdjacentHTML("beforeend", teamOpts);
+  $("#d-team").insertAdjacentHTML("beforeend", teamOpts);
+  $("#d-day").innerHTML = (S.daily?.days ?? []).map((d) => `<option value="${d.date}">${fmtDay(d.date)} · ${d.games} game${d.games === 1 ? "" : "s"}</option>`).join("") || `<option value="">No games yet</option>`;
+  ["#d-day", "#d-team", "#d-min"].forEach((sel) => $(sel).addEventListener("input", renderDaily));
   if (!S.logs[S.meta.season]?.length && seasons.includes(S.meta.previous_season)) $("#f-season").value = S.meta.previous_season;
 
   renderFreshness(); renderRail(); renderGames(); renderLeaders(); renderTeams(); renderPlayers();
@@ -1285,7 +1441,7 @@ async function init() {
   $("#fresh-toggle").addEventListener("click", (e) => { const p = $("#fresh-panel"); p.hidden = !p.hidden; e.currentTarget.setAttribute("aria-expanded", String(!p.hidden)); });
   window.addEventListener("resize", () => echarts?.getInstanceByDom($("#trend"))?.resize());
   const start = location.hash.slice(1);
-  if (["games", "leaders", "teams", "players", "model"].includes(start)) showView(start);
+  if (["games", "daily", "leaders", "teams", "players", "model"].includes(start)) showView(start);
 }
 init();
 </script>
