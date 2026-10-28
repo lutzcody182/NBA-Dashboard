@@ -210,3 +210,26 @@ def test_allocation_hits_team_total():
     deep = np.array([34.0, 32, 30, 28, 26, 22, 18, 15, 12, 10, 8, 6, 5])
     c, b = allocate(deep, np.ones(13), 240.0), allocate(deep, np.ones(13), 240.0, power=1.5)
     assert b.sum() == pytest.approx(240.0) and b[0] > c[0] and b[-1] < c[-1]
+
+
+def test_daily_leaderboard_lines_and_role_changes(tmp_path):
+    from pipeline import db
+    from pipeline.export import daily as D
+    conn = db.connect(tmp_path / "t.sqlite")
+    rows = []
+    for i in range(12):
+        day = f"2026-10-{i + 10:02d}"
+        started = int(i == 11)                 # first start in the last game
+        mins = 32.0 if i == 11 else 12.0
+        rows.append(dict(game_id=f"g{i}", date=day, player_id=7, team_id=BOS, opp_id=LAL, home=1, started=started,
+                         min=mins, pts=20, reb=5, oreb=1, dreb=4, ast=3, stl=1, blk=0, tov=2, pf=1, fgm=8, fga=16,
+                         fg3m=2, fg3a=6, ftm=2, fta=2, plus_minus=4, usg_n=20.0, usg_d=80.0))
+    out = D.build(conn, "2026-27", pd.DataFrame(rows))
+    assert [d["date"] for d in out["days"]][:2] == ["2026-10-21", "2026-10-20"]   # newest first
+    assert len(out["days"]) == min(D.DAYS, 12)
+    r = dict(zip(out["days"][0]["cols"]["cols"], out["days"][0]["cols"]["rows"][0]))
+    assert r["ts"] == pytest.approx(20 / (2 * (16 + 0.44 * 2)), abs=1e-3)
+    assert r["efg"] == pytest.approx((8 + 1) / 16, abs=1e-3)
+    assert r["usg"] == pytest.approx(0.25)
+    assert r["l10_min"] == pytest.approx(12.0) and r["l10_starts"] == 0 and r["prior_games"] == 11
+    assert r["pra"] == 28 and r["on_net"] is None and r["proj_min"] is None
