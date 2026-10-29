@@ -287,8 +287,10 @@ tr.sel { background: var(--panel-2); }
 .lb { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 12px 8px; min-width: 0; }
 .lb h3 { margin: 0; font: 700 15px var(--cond); letter-spacing: 0.02em; text-transform: uppercase; color: var(--muted); }
 .lb h3 small { text-transform: none; letter-spacing: 0; font: 500 12px var(--body); margin-left: 4px; }
-.lb ol { list-style: none; margin: 6px 0 0; padding: 0; }
-.lb li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; padding: 3px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.lb ol { list-style: none; margin: 6px 0 0; padding: 0 4px 0 0; max-height: 262px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.lb ol::-webkit-scrollbar { width: 6px; } .lb ol::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+.lb h3 .cnt { float: right; text-transform: none; letter-spacing: 0; font: 500 12px var(--body); color: var(--muted); }
+.lb li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; padding: 3px 0; border-top: 1px solid var(--line); font-size: 14px; }
 .lb li:first-child { border-top: 0; }
 .lb li .rk { color: var(--muted); font: 600 13px var(--cond); }
 .lb li .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1285,7 +1287,7 @@ function dVal(v, c) {
 }
 function dCard(title, note, list, valFn, ctxFn) {
   const items = list.map((r, i) => `<li><span class="rk">${i + 1}</span>${dWho(r)}<span class="v">${valFn(r)}</span>${ctxFn ? `<span class="ctx">${ctxFn(r)}</span>` : ""}</li>`).join("");
-  return `<div class="lb"><h3>${esc(title)}${note ? `<small>${esc(note)}</small>` : ""}</h3>${items ? `<ol>${items}</ol>` : `<div class="none">Nobody this day.</div>`}</div>`;
+  return `<div class="lb" data-lb="${esc(title)}"><h3>${esc(title)}${note ? `<small>${esc(note)}</small>` : ""}${list.length > 5 ? `<span class="cnt">${list.length}</span>` : ""}</h3>${items ? `<ol>${items}</ol>` : `<div class="none">Nobody this day.</div>`}</div>`;
 }
 function renderDaily() {
   const days = [...(LIVE.day ? [LIVE.day] : []), ...(S.daily?.days ?? []).filter((d) => d.date !== LIVE.day?.date)];
@@ -1293,21 +1295,23 @@ function renderDaily() {
   const day = days.find((d) => d.date === $("#d-day").value) ?? days[0];
   const rows = dailyRows(day);
   $("#daily-title").innerHTML = `Daily leaders: ${fmtDay(day.date)}${day.live ? ` <small style="color:var(--muted);font:500 14px var(--body)">${LIVE.anyLive ? `<span class="live-dot" aria-hidden="true"></span>live box scores, ` : "box scores "}updated ${LIVE.updated.toLocaleTimeString("en-US", { timeZone: ET_TZ, hour: "numeric", minute: "2-digit", second: "2-digit" })}</small>` : ""}`;
-  const top = (arr, key, n = 5, asc = false) => arr.filter((r) => r[key] != null).sort((a, b) => asc ? a[key] - b[key] : b[key] - a[key]).slice(0, n);
+  const scrolls = {};
+  document.querySelectorAll("#view-daily .lb[data-lb]").forEach((el) => { const ol = el.querySelector("ol"); if (ol) scrolls[el.dataset.lb] = ol.scrollTop; });
+  const top = (arr, key, n = Infinity, asc = false) => arr.filter((r) => r[key] != null).sort((a, b) => asc ? a[key] - b[key] : b[key] - a[key]).slice(0, n);
   $("#d-cards").innerHTML = D_CARDS.map((c) => dCard(c.label, c.note, top(c.min ? rows.filter(c.min) : rows, c.k), (r) => dVal(r[c.k], c), c.ctx)).join("");
 
   // what changed
   const est = rows.filter((r) => r.dmin != null);
   const up = top(est.filter((r) => r.dmin >= 6), "dmin");
-  const down = top(est.filter((r) => r.l10_min >= 20 && r.dmin <= -6), "dmin", 5, true);
+  const down = top(est.filter((r) => r.l10_min >= 20 && r.dmin <= -6), "dmin", Infinity, true);
   const newStart = rows.filter((r) => r.started && r.prior_games >= 3 && r.l10_starts <= Math.min(r.prior_games, 10) * 0.3)
-    .sort((a, b) => b.min - a.min).slice(0, 5);
+    .sort((a, b) => b.min - a.min);
   const benched = rows.filter((r) => !r.started && r.prior_games >= 3 && r.l10_starts >= Math.min(r.prior_games, 10) * 0.7)
-    .sort((a, b) => b.l10_starts - a.l10_starts).slice(0, 5);
+    .sort((a, b) => b.l10_starts - a.l10_starts);
   const proj = rows.filter((r) => r.proj_min != null);
   const projKey = proj.some((r) => r.proj_pts != null) ? "pts" : "min";
   proj.forEach((r) => (r.dproj = projKey === "pts" ? (r.proj_pts != null ? r.pts - r.proj_pts : null) : r.min - r.proj_min));
-  const beat = top(proj, "dproj"), missed = top(proj, "dproj", 5, true);
+  const beat = top(proj.filter((r) => r.dproj > 0), "dproj"), missed = top(proj.filter((r) => r.dproj < 0), "dproj", Infinity, true);
   const s1 = (v) => signed(v, 1);
   const result = (r) => r.margin == null ? "" : `; ${r.margin > 0 ? "won" : "lost"} by ${Math.abs(r.margin)}${Math.abs(r.margin) >= 20 ? " (blowout)" : ""}`;
   const prev = (r) => `${fmt(r.min)} min vs ${fmt(r.l10_min)} before${result(r)}`;
@@ -1320,6 +1324,7 @@ function renderDaily() {
     proj.length ? dCard(projKey === "pts" ? "Beat projected points" : "More minutes than projected", "last pregame projection", beat, (r) => s1(r.dproj), projCtx) : "",
     proj.length ? dCard(projKey === "pts" ? "Below projected points" : "Fewer minutes than projected", "last pregame projection", missed, (r) => s1(r.dproj), projCtx) : "",
   ].join("");
+  document.querySelectorAll("#view-daily .lb[data-lb]").forEach((el) => { const ol = el.querySelector("ol"); if (ol && scrolls[el.dataset.lb]) ol.scrollTop = scrolls[el.dataset.lb]; });
 
   // table
   const minM = Number($("#d-min").value) || 0;
