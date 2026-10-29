@@ -243,6 +243,12 @@ tr.sel { background: var(--panel-2); }
   .profile, .model-grid { grid-template-columns: minmax(0, 1fr); }
   .tabs { flex-wrap: wrap; }
 }
+/* Live */
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); display: inline-block; margin-right: 6px; animation: pulse 1.6s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
+.rail-live { font-size: 11px; color: var(--muted); font-weight: 500; margin-top: 3px; }
+.bt-now { color: var(--text); font-weight: 600; }
 /* Bets */
 .bt-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr)); gap: 12px; margin-bottom: 18px; }
 .bt-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 14px; }
@@ -567,7 +573,7 @@ function renderFreshness() {
 // ---------- slate rail ----------
 function statusLine(g) {
   if (g.status === "final") return { text: g.periods > 4 ? `Final/${g.periods === 5 ? "OT" : g.periods - 4 + "OT"}` : "Final", live: false };
-  if (g.status === "live") return { text: "Live", live: true };
+  if (g.status === "live") return { text: g.clock_text || "Live", live: true };
   if (g.status === "postponed") return { text: "Postponed", live: false };
   return { text: fmtTime(g.tip_utc), live: false };
 }
@@ -580,7 +586,7 @@ function renderRail() {
     const d = sch[key];
     if (!d) continue;
     const name = key === "today" ? "Today" : key === "yesterday" ? "Yesterday" : "Tomorrow";
-    parts.push(`<div class="rail-day"><strong>${name}</strong>${fmtDay(d.date)}</div>`);
+    parts.push(`<div class="rail-day"><strong>${name}</strong>${fmtDay(d.date)}${key === "today" && LIVE.updated ? `<span class="rail-live">${LIVE.anyLive ? `<span class="live-dot" aria-hidden="true"></span>Live · ` : ""}${LIVE.updated.toLocaleTimeString("en-US", { timeZone: ET_TZ, hour: "numeric", minute: "2-digit", second: "2-digit" })}</span>` : ""}</div>`);
     if (!d.games.length) { parts.push(`<div class="rail-game" style="cursor:default"><span class="st">No games</span></div>`); continue; }
     for (const g of d.games) {
       const st = statusLine(g);
@@ -857,6 +863,192 @@ function renderLeaders() {
   $("#leaders-count").textContent = `${agg.length} players for ${range}${agg.length > shown.length ? `, showing the top ${shown.length}` : ""}. Baseline compares ${baseStat.toUpperCase()} per game.`;
 }
 
+// ---------- live scores and box scores (straight from ESPN's public feed, in the browser) ----------
+const ESPN = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba";
+const LIVE = { timer: null, updated: null, anyLive: false, events: [], box: {}, boxAt: {}, day: null, errors: 0 };
+const normName = (s) => String(s ?? "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[.'’`-]/g, "").replace(/\b(jr|sr|ii|iii|iv|v)\b/g, "").replace(/\s+/g, " ").trim();
+let nameToId = null;
+function playerIdByName(n) {
+  if (!nameToId) { nameToId = new Map(); for (const [id, p] of Object.entries(S.players ?? {})) nameToId.set(normName(p.name), +id); }
+  return nameToId.get(normName(n));
+}
+function teamIdFromEspn(t) {
+  const nick = normName(t?.name ?? t?.shortDisplayName), full = normName(t?.displayName);
+  for (const [id, x] of Object.entries(S.teamById)) {
+    const nk = normName(x.name);
+    if (full === normName(`${x.city} ${x.name}`) || full.endsWith(" " + nk) || nick === nk) return +id;
+  }
+  return null;
+}
+function clockText(st) {
+  const t = st?.type ?? {};
+  if (t.name === "STATUS_HALFTIME") return "Half";
+  if (t.state !== "in") return t.shortDetail ?? "";
+  const q = st.period > 4 ? (st.period === 5 ? "OT" : `${st.period - 4}OT`) : `Q${st.period}`;
+  return t.name === "STATUS_END_PERIOD" ? `End ${q}` : `${q} ${st.displayClock}`;
+}
+function ourGame(ev) {
+  const all = ["yesterday", "today", "tomorrow"].flatMap((k) => S.schedule?.[k]?.games ?? []);
+  return all.find((g) => String(g.game_id).endsWith(ev.id)) ?? (() => {
+    const comp = ev.competitions?.[0]; const h = comp?.competitors?.find((c) => c.homeAway === "home"), a = comp?.competitors?.find((c) => c.homeAway === "away");
+    const hi = teamIdFromEspn(h?.team), ai = teamIdFromEspn(a?.team);
+    return all.find((g) => g.home_team_id === hi && g.away_team_id === ai && g.game_date === etDate(0));
+  })();
+}
+function applyScoreboard(events) {
+  let changed = false;
+  for (const ev of events) {
+    const g = ourGame(ev); if (!g) continue;
+    const comp = ev.competitions?.[0]; const st = comp?.status ?? ev.status;
+    const h = comp?.competitors?.find((c) => c.homeAway === "home"), a = comp?.competitors?.find((c) => c.homeAway === "away");
+    const state = st?.type?.state;
+    const status = state === "in" ? "live" : state === "post" ? (st.type.name === "STATUS_POSTPONED" ? "postponed" : "final") : g.status;
+    const hs = state === "pre" ? g.home_score : +h?.score, as = state === "pre" ? g.away_score : +a?.score;
+    const ct = clockText(st);
+    if (g.status !== status || g.home_score !== hs || g.away_score !== as || g.clock_text !== ct) changed = true;
+    Object.assign(g, { status, home_score: hs, away_score: as, clock_text: ct, periods: st?.period || g.periods, espn_id: ev.id });
+  }
+  return changed;
+}
+const num = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : 0; };
+const pair = (v) => String(v ?? "0-0").split("-").map(num);
+function boxRows(ev, sum) {
+  const g = ourGame(ev); if (!g || !sum?.boxscore?.players) return [];
+  const rows = [];
+  const teams = sum.boxscore.players.map((t) => ({ tid: teamIdFromEspn(t.team), st: t.statistics?.[0] }));
+  for (const { tid, st } of teams) {
+    if (!st) continue;
+    const opp = teams.find((x) => x.tid !== tid)?.tid;
+    const k = st.keys ?? [];
+    const idx = (name) => k.indexOf(name);
+    const tm = { min: 0, fga: 0, fta: 0, tov: 0 };
+    const mine = [];
+    for (const a of st.athletes ?? []) {
+      if (a.didNotPlay || !a.stats?.length) continue;
+      const v = (name) => a.stats[idx(name)];
+      const min = num(v("minutes")); if (min <= 0) continue;
+      const [fgm, fga] = pair(v("fieldGoalsMade-fieldGoalsAttempted")), [fg3m, fg3a] = pair(v("threePointFieldGoalsMade-threePointFieldGoalsAttempted")), [ftm, fta] = pair(v("freeThrowsMade-freeThrowsAttempted"));
+      const r = { game_id: g.game_id, name: a.athlete?.displayName, player_id: playerIdByName(a.athlete?.displayName) ?? `e${a.athlete?.id}`,
+        team_id: tid, opp_id: opp, home: tid === g.home_team_id ? 1 : 0, started: a.starter ? 1 : 0, min,
+        pts: num(v("points")), reb: num(v("rebounds")), oreb: num(v("offensiveRebounds")), dreb: num(v("defensiveRebounds")),
+        ast: num(v("assists")), stl: num(v("steals")), blk: num(v("blocks")), tov: num(v("turnovers")), pf: num(v("fouls")),
+        fgm, fga, fg3m, fg3a, ftm, fta, plus_minus: num(v("plusMinus")), on_net: null, on_poss: null };
+      tm.min += min; tm.fga += fga; tm.fta += fta; tm.tov += r.tov;
+      mine.push(r);
+    }
+    for (const r of mine) {
+      const tsa = r.fga + 0.44 * r.fta;
+      r.ts = tsa > 0 ? r.pts / (2 * tsa) : null;
+      r.efg = r.fga > 0 ? (r.fgm + 0.5 * r.fg3m) / r.fga : null;
+      const used = tm.fga + 0.44 * tm.fta + tm.tov;
+      r.usg = r.min > 0 && used > 0 ? ((r.fga + 0.44 * r.fta + r.tov) * (tm.min / 5)) / (r.min * used) : null;
+      r.gmsc = r.pts + 0.4 * r.fgm - 0.7 * r.fga - 0.4 * (r.fta - r.ftm) + 0.7 * r.oreb + 0.3 * r.dreb + r.stl + 0.7 * r.ast + 0.7 * r.blk - 0.4 * r.pf - r.tov;
+      r.pra = r.pts + r.reb + r.ast;
+      // previous 10 games from the season log, and the pregame projection
+      const hist = (S.logsByPlayer?.[S.meta.season]?.get(r.player_id) ?? []).filter((x) => x.date < g.game_date).slice(-10);
+      r.prior_games = (S.logsByPlayer?.[S.meta.season]?.get(r.player_id) ?? []).filter((x) => x.date < g.game_date).length;
+      r.l10_min = hist.length ? hist.reduce((s2, x) => s2 + x.min, 0) / hist.length : null;
+      r.l10_starts = hist.reduce((s2, x) => s2 + (x.started ? 1 : 0), 0);
+      const pj = (S.projByGame[g.game_id]?.teams?.[String(tid)]?.players ?? []).find((x) => x.player_id === r.player_id);
+      const sp = (S.simByGame[g.game_id]?.teams?.[String(tid)]?.players ?? []).find((x) => x.player_id === r.player_id);
+      r.proj_min = pj ? (pj.expected_min ?? pj.min) : null; r.proj_pts = sp?.pts ?? null;
+      rows.push(r);
+    }
+  }
+  return rows;
+}
+function buildLiveDay() {
+  const today = S.schedule?.today; if (!today) return null;
+  const started = LIVE.events.filter((ev) => ["in", "post"].includes(ev.status?.type?.state));
+  if (!started.length) return null;
+  const rows = started.flatMap((ev) => LIVE.box[ev.id] ? boxRows(ev, LIVE.box[ev.id]) : []);
+  if (!rows.length) return null;
+  const cols = Object.keys(rows[0]);
+  const scores = {}; for (const g of today.games) if (g.home_score != null) scores[g.game_id] = `${g.home_score}-${g.away_score}`;
+  return { date: today.date, live: true, games: new Set(rows.map((r) => r.game_id)).size, players: rows.length,
+    has_projections: rows.some((r) => r.proj_min != null), cols: { cols, rows: rows.map((r) => cols.map((c) => r[c])) }, scores };
+}
+function dayOptions() {
+  const sel = $("#d-day"); if (!sel) return;
+  // follow today's live games unless a different day was picked by hand
+  const keep = sel.dataset.picked ? sel.value : null;
+  const days = [...(LIVE.day ? [LIVE.day] : []), ...(S.daily?.days ?? []).filter((d) => d.date !== LIVE.day?.date)];
+  sel.innerHTML = days.map((d) => `<option value="${d.date}">${fmtDay(d.date)} · ${d.games} game${d.games === 1 ? "" : "s"}${d.live ? (LIVE.anyLive ? " (live)" : " (today)") : ""}</option>`).join("") || `<option value="">No games yet</option>`;
+  if (keep && days.some((d) => d.date === keep)) sel.value = keep;
+}
+function liveBetLine(b) {
+  const g = ["today", "yesterday"].flatMap((k) => S.schedule?.[k]?.games ?? []).find((x) => x.game_id === b.game_id);
+  if (!g || !["live", "final"].includes(g.status) || b.status !== "open" && b.status !== "live") return "";
+  let now = null, need = b.line, label = "";
+  if (b.kind === "prop") {
+    const r = (LIVE.day && fromCols(LIVE.day.cols).find((x) => x.game_id === b.game_id && x.player_id === b.player_id));
+    if (!r) return `<span class="why bt-now">${g.status === "live" ? "Hasn't played yet" : "Did not play: void"} · ${esc(g.clock_text ?? "")}</span>`;
+    now = b.stat === "pra" ? r.pts + r.reb + r.ast : b.stat === "pr" ? r.pts + r.reb : b.stat === "pa" ? r.pts + r.ast : b.stat === "ra" ? r.reb + r.ast : r[b.stat];
+    label = `${now} ${STAT_WORD[b.stat] ?? b.stat} in ${fmt(r.min, 0)} min`;
+  } else {
+    const margin = g.home_score - g.away_score, total = g.home_score + g.away_score;
+    if (b.kind === "total") { now = total; label = `total ${total}`; }
+    else if (b.kind === "moneyline") { now = b.side === "home" ? margin : -margin; need = 0; label = `${abbr(b.side === "home" ? g.home_team_id : g.away_team_id)} ${now > 0 ? "up" : now < 0 ? "down" : "tied"}${now ? " " + Math.abs(now) : ""}`; }
+    else { now = (b.side === "home" ? margin : -margin) + b.line; need = 0; label = `${abbr(b.side === "home" ? g.home_team_id : g.away_team_id)} covering by ${now > 0 ? "+" : ""}${now}`; }
+  }
+  const over = b.kind === "prop" || b.kind === "total" ? (b.side === "over" ? now > need : now < need) : now > 0;
+  const done = g.status === "final";
+  const word = done ? (over ? "Won" : (now === need ? "Push" : "Lost")) : (over ? "Winning" : "Behind");
+  return `<span class="why bt-now"><span class="${over ? "res-won" : done && now === need ? "res-push" : "res-lost"}">${word}</span> · ${esc(label)} · ${esc(g.status === "final" ? "Final" : g.clock_text ?? "Live")}</span>`;
+}
+async function liveTick() {
+  if (document.hidden) { schedule(60000); return; }
+  try {
+    const date = etDate(0).replaceAll("-", "");
+    const r = await fetch(`${ESPN}/scoreboard?dates=${date}`, { cache: "no-store" });
+    if (!r.ok) throw new Error(`scoreboard ${r.status}`);
+    const sb = await r.json();
+    LIVE.events = sb.events ?? [];
+    const changed = applyScoreboard(LIVE.events);
+    LIVE.anyLive = LIVE.events.some((e) => e.status?.type?.state === "in");
+    // box scores: every game in progress each tick, and each finished game once more after it ends
+    const want = LIVE.events.filter((e) => e.status?.type?.state === "in" || (e.status?.type?.state === "post" && LIVE.boxAt[e.id] !== "final"));
+    await Promise.all(want.map(async (e) => {
+      try {
+        const s = await fetch(`${ESPN}/summary?event=${e.id}`, { cache: "no-store" });
+        if (s.ok) { LIVE.box[e.id] = await s.json(); LIVE.boxAt[e.id] = e.status.type.state === "post" ? "final" : Date.now(); }
+      } catch (_) { /* keep the last box score */ }
+    }));
+    LIVE.day = buildLiveDay();
+    LIVE.updated = new Date(); LIVE.errors = 0;
+    renderRail();
+    const view = location.hash.slice(1) || "games";
+    if (view === "games" && changed) {
+      if (!document.querySelector("#games .game.open")) renderGames();
+      else patchGameScores();      // keep an open simulation or rotation panel open
+    }
+    dayOptions();
+    if (view === "daily" && (!$("#d-day").dataset.picked || $("#d-day").value === LIVE.day?.date)) renderDaily();
+    if (view === "bets") renderBets();
+  } catch (err) {
+    LIVE.errors += 1;
+    console.warn("Live update failed", err);
+  }
+  const pending = LIVE.events.some((e) => e.status?.type?.state === "pre");
+  const soon = LIVE.events.some((e) => e.status?.type?.state === "pre" && new Date(e.date) - Date.now() < 20 * 60000);
+  const delay = LIVE.errors ? Math.min(300000, 30000 * 2 ** LIVE.errors) : LIVE.anyLive || soon ? 30000 : pending ? 120000 : 600000;
+  schedule(delay);
+}
+function patchGameScores() {
+  for (const g of S.schedule?.[S.day]?.games ?? []) {
+    const card = document.getElementById("g-" + g.game_id); if (!card) continue;
+    const st = statusLine(g);
+    const when = card.querySelector(".when"); if (when) { when.textContent = st.text; when.classList.toggle("live", st.live); }
+    const m = card.querySelector(".matchup");
+    if (m) m.innerHTML = `${abbr(g.away_team_id)}${g.away_score != null ? ` <span class="num">${g.away_score}</span>` : ""}<span class="at">at</span>${abbr(g.home_team_id)}${g.home_score != null ? ` <span class="num">${g.home_score}</span>` : ""}`;
+  }
+}
+function schedule(ms) { clearTimeout(LIVE.timer); LIVE.timer = setTimeout(liveTick, ms); }
+function startLive() {
+  liveTick();
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { clearTimeout(LIVE.timer); liveTick(); } });
+}
+
 // ---------- bets ----------
 const STAT_WORD = { pts: "points", reb: "rebounds", ast: "assists", fg3m: "threes", pra: "pts+reb+ast", pr: "pts+reb", pa: "pts+ast", ra: "reb+ast" };
 function betLabel(b) {
@@ -898,7 +1090,7 @@ function renderBets() {
     const g = bs[0], tot = bs.reduce((a, b) => a + b.units, 0);
     const rows = bs.sort((a, b) => b.ev - a.ev).map((b) => `<div class="bt-row"><span class="what">${betLabel(b)}</span>
       <span class="price">${odds(b.price)} <small style="color:var(--muted)">${esc(bookName(b.book))}</small></span><span class="units">${fmt(b.units, 2)}u</span>
-      <span class="why">Model ${pct(b.p_model)}%, market ${pct(b.p_market)}%, used ${pct(b.p_used)}%; expected return ${signed(100 * b.ev, 1)}% · ${b.status === "live" ? `<span style="color:var(--accent)">Qualifies now, not locked yet</span> (prices from ${fmtStamp(b.created_at)}; it locks when fresh prices still show it)` : `${betResultCell(b)} · locked ${fmtStamp(b.created_at)}`}</span></div>`).join("");
+      ${liveBetLine(b)}<span class="why">Model ${pct(b.p_model)}%, market ${pct(b.p_market)}%, used ${pct(b.p_used)}%; expected return ${signed(100 * b.ev, 1)}% · ${b.status === "live" ? `<span style="color:var(--accent)">Qualifies now, not locked yet</span> (prices from ${fmtStamp(b.created_at)}; it locks when fresh prices still show it)` : `${betResultCell(b)} · locked ${fmtStamp(b.created_at)}`}</span></div>`).join("");
     return `<div class="bt-game"><h3><span>${abbr(g.away_team_id)} @ ${abbr(g.home_team_id)}</span><small>${fmtTime(g.tip_utc)} · ${fmt(tot, 2)} units</small></h3>${rows}</div>`;
   }).join("") : `<div class="empty">No picks qualify at the latest prices${d.odds_as_of ? ` (${fmtStamp(d.odds_as_of)})` : ""}. Odds are pulled about every 75 to 90 minutes on game days, starting late morning.</div>`;
   // ledger
@@ -1083,7 +1275,7 @@ function dailyRows(day) {
   }).filter((r) => !team || String(r.team_id) === team);
 }
 function dWho(r) {
-  const p = S.players[r.player_id] ?? {};
+  const p = r.name ? { name: r.name } : (S.players[r.player_id] ?? {});
   return `<span class="who" title="${esc(p.name ?? "")}, ${abbr(r.team_id)} ${r.home ? "vs" : "@"} ${abbr(r.opp_id)}">${esc(p.name ?? r.player_id)}<small>${abbr(r.team_id)}</small></span>`;
 }
 function dVal(v, c) {
@@ -1094,11 +1286,11 @@ function dCard(title, note, list, valFn, ctxFn) {
   return `<div class="lb"><h3>${esc(title)}${note ? `<small>${esc(note)}</small>` : ""}</h3>${items ? `<ol>${items}</ol>` : `<div class="none">Nobody this day.</div>`}</div>`;
 }
 function renderDaily() {
-  const days = S.daily?.days ?? [];
+  const days = [...(LIVE.day ? [LIVE.day] : []), ...(S.daily?.days ?? []).filter((d) => d.date !== LIVE.day?.date)];
   if (!days.length) { $("#d-cards").innerHTML = `<div class="empty">No games played yet this season.</div>`; return; }
   const day = days.find((d) => d.date === $("#d-day").value) ?? days[0];
   const rows = dailyRows(day);
-  $("#daily-title").textContent = `Daily leaders: ${fmtDay(day.date)}`;
+  $("#daily-title").innerHTML = `Daily leaders: ${fmtDay(day.date)}${day.live ? ` <small style="color:var(--muted);font:500 14px var(--body)">${LIVE.anyLive ? `<span class="live-dot" aria-hidden="true"></span>live box scores, ` : "box scores "}updated ${LIVE.updated.toLocaleTimeString("en-US", { timeZone: ET_TZ, hour: "numeric", minute: "2-digit", second: "2-digit" })}</small>` : ""}`;
   const top = (arr, key, n = 5, asc = false) => arr.filter((r) => r[key] != null).sort((a, b) => asc ? a[key] - b[key] : b[key] - a[key]).slice(0, n);
   $("#d-cards").innerHTML = D_CARDS.map((c) => dCard(c.label, c.note, top(c.min ? rows.filter(c.min) : rows, c.k), (r) => dVal(r[c.k], c), c.ctx)).join("");
 
@@ -1692,8 +1884,9 @@ async function init() {
   $("#f-opp").insertAdjacentHTML("beforeend", teamOpts);
   $("#p-team").insertAdjacentHTML("beforeend", teamOpts);
   $("#d-team").insertAdjacentHTML("beforeend", teamOpts);
-  $("#d-day").innerHTML = (S.daily?.days ?? []).map((d) => `<option value="${d.date}">${fmtDay(d.date)} · ${d.games} game${d.games === 1 ? "" : "s"}</option>`).join("") || `<option value="">No games yet</option>`;
+  dayOptions();
   ["#d-day", "#d-team", "#d-min"].forEach((sel) => $(sel).addEventListener("input", renderDaily));
+  $("#d-day").addEventListener("input", (e) => { e.target.dataset.picked = e.target.selectedIndex === 0 && LIVE.day ? "" : "1"; });
   const prGames = [...new Set((S.props?.props ?? []).map((p) => p.game_id))];
   $("#pr-game").insertAdjacentHTML("beforeend", prGames.map((g) => `<option value="${esc(g)}">${esc(gameLabel(g))}</option>`).join(""));
   $("#pr-stat").insertAdjacentHTML("beforeend", Object.entries(S.props?.stat_labels ?? {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""));
@@ -1702,6 +1895,7 @@ async function init() {
   if (!S.logs[S.meta.season]?.length && seasons.includes(S.meta.previous_season)) $("#f-season").value = S.meta.previous_season;
 
   renderFreshness(); renderRail(); renderGames(); renderLeaders(); renderTeams(); renderPlayers();
+  startLive();
 
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => showView(t.dataset.view)));
   document.querySelectorAll("#day-seg button").forEach((b) => b.addEventListener("click", () => { S.day = b.dataset.day; S.focusGame = null; renderGames(); }));
