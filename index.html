@@ -243,6 +243,19 @@ tr.sel { background: var(--panel-2); }
   .profile, .model-grid { grid-template-columns: minmax(0, 1fr); }
   .tabs { flex-wrap: wrap; }
 }
+/* Shot zones */
+.sz-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-bottom: 18px; }
+.sz-grid > .panel { min-width: 0; }
+.sz-grid .court { max-width: 520px; margin: 0 auto; }
+.zone-lbl { font: 700 15px var(--cond); fill: var(--text); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
+.zone-sub { font: 500 12px var(--body); fill: var(--text); paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
+.scale { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; margin: 8px 0 0; flex-wrap: wrap; }
+.scale .bar { width: 140px; height: 10px; border-radius: 3px; background: linear-gradient(90deg, #3FB9A3, #22324A, #E2604F); }
+#sz-table td.hl { font-weight: 700; }
+.zm { width: 100%; }
+.zm td, .zm th { font-size: 13px; padding: 4px 8px; }
+.zm .edge-good { color: var(--good); font-weight: 600; } .zm .edge-bad { color: var(--bad); font-weight: 600; }
+@media (max-width: 760px) { .sz-grid { grid-template-columns: minmax(0, 1fr); } }
 /* Box score */
 dialog.box { width: min(1080px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--bg); color: var(--text); }
 dialog.box::backdrop { background: rgba(5, 10, 16, 0.72); }
@@ -351,6 +364,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     <button class="tab" role="tab" data-view="leaders" aria-selected="false">Leaders</button>
     <button class="tab" role="tab" data-view="teams" aria-selected="false">Teams</button>
     <button class="tab" role="tab" data-view="lineups" aria-selected="false">Lineups</button>
+    <button class="tab" role="tab" data-view="zones" aria-selected="false">Shot zones</button>
     <button class="tab" role="tab" data-view="players" aria-selected="false">Players</button>
     <button class="tab" role="tab" data-view="model" aria-selected="false">Model</button>
   </nav>
@@ -476,6 +490,26 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     </div>
     <div class="table-wrap"><table id="leaders-table"></table></div>
     <p class="count" id="leaders-count"></p>
+  </section>
+
+  <!-- Shot zones -->
+  <section class="view" id="view-zones" hidden>
+    <h2>Shot zones</h2>
+    <p class="sub">Where teams shoot and where they let opponents shoot, in five zones from every game's play-by-play, and against league average. Zone numbers are the same estimates the game simulation uses: this season's games blended with last season's until a team has enough shots to stand on its own. The heat map shows exact shot locations, saved from ESPN's play-by-play for every game this season.</p>
+    <div class="controls">
+      <label class="ctl">Team<select id="sz-team"></select></label>
+      <div class="seg" role="group" aria-label="Side" id="sz-side">
+        <button data-side="def" aria-pressed="true">Defense: what opponents get</button><button data-side="off" aria-pressed="false">Offense</button>
+      </div>
+      <label class="ctl" id="sz-player-wrap" hidden>Player (heat map)<select id="sz-player"><option value="">Whole team</option></select></label>
+    </div>
+    <div class="sz-grid">
+      <div class="panel"><h3 id="sz-zone-title">By zone</h3><div id="sz-zones"></div></div>
+      <div class="panel"><h3 id="sz-heat-title">Heat map</h3><div id="sz-heat"></div></div>
+    </div>
+    <h3 class="sec" id="sz-rank-title">League ranks by zone</h3>
+    <p class="sec-sub" id="sz-rank-sub"></p>
+    <div class="table-wrap"><table id="sz-table"></table></div>
   </section>
 
   <!-- Lineups -->
@@ -806,6 +840,7 @@ function simPanel(s) {
   return `<div><h4>How ${s.n_sims.toLocaleString()} simulated games ended</h4><div class="hist">${histSvg(s)}</div>
       <p class="meta">${hm} wins ${Math.round(100 * s.home_win)}% of them. Middle 80% of margins: ${mq["0.1"] < 0 ? `${aw} by ${fmt(-mq["0.1"], 0)}` : `${hm} by ${fmt(mq["0.1"], 0)}`} to ${mq["0.9"] < 0 ? `${aw} by ${fmt(-mq["0.9"], 0)}` : `${hm} by ${fmt(mq["0.9"], 0)}`}. Total points ${q(s.total_q)}. Overtime in ${fmt(100 * s.overtime, 1)}%.</p></div>
     <div><h4>What moves it</h4>${moves}<p class="meta">Starting point: each team's shot mix, make rates, turnovers, free throws and rebounding so far, shrunk by learned amounts and matched offense against defense. Who's playing compares tonight's expected minutes with the lineups those numbers came from, valued with the player ratings.</p></div>
+    <div style="grid-column:1/-1">${zoneMatchup(s.away_team_id, s.home_team_id)}</div>
     <div>${players(s.away_team_id)}</div><div>${players(s.home_team_id)}</div>
     <p class="meta" style="grid-column:1/-1">Player lines are averages. Each team's expected shots, free throws, rebounds, assists and turnovers are split among its players by minutes and usage, so when a player sits, his share goes to teammates in proportion to their own usage (or more than that for high-usage players, where the data says so).</p>`;
 }
@@ -1284,6 +1319,132 @@ function startLive() {
   dlg.addEventListener("close", () => { BOX.game = null; });
   liveTick();
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { clearTimeout(LIVE.timer); liveTick(); } });
+}
+
+// ---------- shot zones ----------
+const ZONES = [["rim", "At the rim"], ["paint", "Paint and short"], ["mid", "Mid-range"], ["c3", "Corner three"], ["ab3", "Above-the-break three"]];
+const SZ = { side: "def", maps: undefined };
+function zoneRanks(side) {
+  // rank 1 = best: on defense the lowest FG% (or share) allowed, on offense the highest
+  const sq = S.sq[S.meta.season]; if (!sq) return {};
+  const teams = Object.entries(sq.teams);
+  const out = {};
+  for (const [z] of ZONES) for (const k of ["share_", "fg_"]) {
+    const key = k + z;
+    // ties (to 0.1%) share a rank: 1 + how many teams are strictly better
+    const v = (x) => Math.round(1000 * x[1][side][key]);
+    for (const t of teams) (out[t[0]] ??= {})[key] = 1 + teams.filter((u) => side === "def" ? v(u) < v(t) : v(u) > v(t)).length;
+  }
+  return out;
+}
+function zoneFill(rel) {
+  // rel: (value / league) - 1, signed so that positive = good for the side shown
+  const t = Math.max(-1, Math.min(1, rel / 0.12));
+  if (Math.abs(t) < 0.06) return "rgba(132, 148, 168, 0.12)";
+  return t >= 0 ? `rgba(63, 185, 163, ${0.15 + 0.6 * t})` : `rgba(226, 96, 79, ${0.15 + 0.6 * -t})`;
+}
+function zoneCourt(tid, side) {
+  const sq = S.sq[S.meta.season]; const t = sq?.teams?.[tid]?.[side]; const lg = sq?.league;
+  if (!t || !lg) return `<p class="pr-note">No zone numbers for this team yet.</p>`;
+  const ranks = zoneRanks(side)[tid] ?? {};
+  const Y = (y) => (HOOP_Y + y) * SC, r3 = 23.75, corner = Math.sqrt(r3 * r3 - 22 * 22);
+  const rel = (z) => { const v = t["fg_" + z] / lg["fg_" + z] - 1; return side === "def" ? -v : v; };
+  const inside = `M 30 0 L 30 ${Y(corner)} A ${r3 * SC} ${r3 * SC} 0 0 0 470 ${Y(corner)} L 470 0 Z`;
+  const fills = `
+    <rect x="0" y="0" width="500" height="470" fill="${zoneFill(rel("ab3"))}"/>
+    <path d="${inside}" fill="var(--panel)"/><path d="${inside}" fill="${zoneFill(rel("mid"))}"/>
+    <rect x="170" y="0" width="160" height="190" fill="var(--panel)"/><rect x="170" y="0" width="160" height="190" fill="${zoneFill(rel("paint"))}"/>
+    <circle cx="250" cy="${Y(0)}" r="40" fill="var(--panel)"/><circle cx="250" cy="${Y(0)}" r="40" fill="${zoneFill(rel("rim"))}"/>
+    <rect x="0" y="0" width="30" height="${Y(corner)}" fill="var(--panel)"/><rect x="0" y="0" width="30" height="${Y(corner)}" fill="${zoneFill(rel("c3"))}"/>
+    <rect x="470" y="0" width="30" height="${Y(corner)}" fill="var(--panel)"/><rect x="470" y="0" width="30" height="${Y(corner)}" fill="${zoneFill(rel("c3"))}"/>`;
+  const lines = `<rect class="ln" x="0" y="0" width="500" height="470"/><rect class="ln" x="170" y="0" width="160" height="190"/>
+    <path class="ln" d="M 30 0 L 30 ${Y(corner)} A ${r3 * SC} ${r3 * SC} 0 0 0 470 ${Y(corner)} L 470 0"/><circle class="ln" cx="250" cy="${Y(0)}" r="40"/>
+    <line class="ln" x1="220" y1="40" x2="280" y2="40"/><circle class="rim" cx="250" cy="${Y(0)}" r="7.5"/><path class="ln" d="M 190 470 A 60 60 0 0 1 310 470"/>`;
+  const lbl = (z, x, y, short) => `<text class="zone-lbl" x="${x}" y="${y}" text-anchor="middle">${pct(t["fg_" + z], 0)}% <tspan class="zone-sub">#${ranks["fg_" + z] ?? "—"}</tspan></text>
+    <text class="zone-sub" x="${x}" y="${y + 17}" text-anchor="middle">${short}${pct(t["share_" + z], 0)}% of shots</text>`;
+  const labels = lbl("rim", 250, 118, "") + lbl("paint", 250, 172, "") + lbl("mid", 105, 165, "") + lbl("mid", 395, 165, "") +
+    [15, 485].map((x) => `<text class="zone-sub" transform="translate(${x} 10) rotate(90)" text-anchor="start">Corner ${pct(t.fg_c3, 0)}% #${ranks.fg_c3 ?? "—"}</text>`).join("") + lbl("ab3", 250, 330, "");
+  const what = side === "def" ? "allowed" : "made";
+  return `<svg class="court" viewBox="-6 -6 512 482" role="img" aria-label="Zone chart">${fills}${lines}${labels}</svg>
+    <div class="scale"><span>${side === "def" ? "Stingier" : "Better"} than average</span><span class="bar" aria-hidden="true"></span><span>${side === "def" ? "Leakier" : "Worse"}</span><span>· Labels: FG% ${what} in the zone, its rank of 30, and the zone's share of shots.</span></div>
+    <table class="zones"><thead><tr><th class="l">Zone</th><th>Share of shots</th><th>League</th><th>FG% ${what}</th><th>League</th><th>Rank</th></tr></thead><tbody>${ZONES.map(([z, name]) => `<tr><td class="l">${name}</td><td>${pct(t["share_" + z])}%</td><td>${pct(lg["share_" + z])}%</td><td>${pct(t["fg_" + z])}%</td><td>${pct(lg["fg_" + z])}%</td><td>${ranks["fg_" + z] ?? "—"}</td></tr>`).join("")}</tbody></table>`;
+}
+function heatMap(pack, league, cell, ymin) {
+  if (!pack?.fga) return `<p class="pr-note">No saved shot locations yet.</p>`;
+  const L = new Map((league?.cells ?? []).map(([cx, cy, a, m]) => [`${cx},${cy}`, [a, m]]));
+  const lgA = league?.fga || 1, myA = pack.fga;
+  const max = Math.max(...pack.cells.map((c) => c[2] / myA));
+  const r3 = 23.75, corner = Math.sqrt(r3 * r3 - 22 * 22), Y = (y) => (HOOP_Y + y) * SC;
+  const cells = pack.cells.map(([cx, cy, a, m]) => {
+    const [la, lm] = L.get(`${cx},${cy}`) ?? [0, 0];
+    const lgPct = la ? lm / la : 0.45;
+    const shr = (m + 6 * lgPct) / (a + 6);              // shrink toward the league rate in that spot
+    const rel = SZ.side === "def" ? lgPct - shr : shr - lgPct;
+    const size = cell * SC * Math.max(0.25, Math.sqrt((a / myA) / max));
+    const x = cx * cell * SC + (cell * SC - size) / 2, y = (HOOP_Y + ymin + cy * cell) * SC + (cell * SC - size) / 2;
+    if (y > 470) return "";
+    const freq = la ? (a / myA) / (la / lgA) : null;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${size.toFixed(1)}" height="${size.toFixed(1)}" rx="2" fill="${zoneFill(rel / 1.2)}" stroke="var(--bg)" stroke-width="0.5"><title>${m}-${a} here (${pct(m / a, 0)}%), league ${pct(lgPct, 0)}%${freq ? `; ${freq.toFixed(1)}x the league's share of shots from this spot` : ""}</title></rect>`;
+  }).join("");
+  const lines = `<rect class="ln" x="0" y="0" width="500" height="470"/><rect class="ln" x="170" y="0" width="160" height="190"/>
+    <path class="ln" d="M 30 0 L 30 ${Y(corner)} A ${r3 * SC} ${r3 * SC} 0 0 0 470 ${Y(corner)} L 470 0"/><circle class="ln" cx="250" cy="190" r="60"/>
+    <line class="ln" x1="220" y1="40" x2="280" y2="40"/><circle class="rim" cx="250" cy="${Y(0)}" r="7.5"/><path class="ln" d="M 190 470 A 60 60 0 0 1 310 470"/>`;
+  return `<svg class="court" viewBox="-6 -6 512 482" role="img" aria-label="Shot heat map">${lines}${cells}</svg>
+    <div class="scale"><span>Bigger square = more shots from that spot · color = FG% there against the league's in the same spot</span></div>`;
+}
+async function renderZones() {
+  const tid = $("#sz-team").value;
+  document.querySelectorAll("#sz-side button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.side === SZ.side)));
+  $("#sz-player-wrap").hidden = SZ.side !== "off";
+  const name = S.teamById[tid] ? `${S.teamById[tid].city} ${S.teamById[tid].name}` : "";
+  $("#sz-zone-title").textContent = SZ.side === "def" ? `What opponents get against ${name}` : `${name} offense by zone`;
+  $("#sz-zones").innerHTML = zoneCourt(tid, SZ.side);
+  if (SZ.maps === undefined) { try { SZ.maps = await getJSON(`teams/shot_maps_${S.meta.season}.json`); } catch (_) { SZ.maps = null; } }
+  const m = SZ.maps;
+  const players = Object.entries(m?.players ?? {}).filter(([, p]) => String(p.team_id) === tid).sort((a, b) => b[1].fga - a[1].fga);
+  const sel = $("#sz-player"), keep = sel.value;
+  sel.innerHTML = `<option value="">Whole team</option>` + players.map(([pid, p]) => `<option value="${pid}">${esc(S.players[pid]?.name ?? pid)} (${p.fga} shots)</option>`).join("");
+  if (players.some(([pid]) => pid === keep)) sel.value = keep;
+  const pid = SZ.side === "off" ? sel.value : "";
+  const pack = pid ? m?.players?.[pid] : m?.teams?.[tid]?.[SZ.side === "def" ? "defense" : "offense"];
+  $("#sz-heat-title").textContent = `${pid ? (S.players[pid]?.name ?? pid) : SZ.side === "def" ? "Opponents' shots" : "Shots"} · ${pack?.fga ?? 0} attempts (league data from ${m?.games ?? 0} games so far)`;
+  $("#sz-heat").innerHTML = heatMap(pack, m?.league, m?.cell ?? 2.5, m?.y_min ?? -4);
+  // league table
+  const sq = S.sq[S.meta.season]; const ranks = zoneRanks(SZ.side);
+  $("#sz-rank-title").textContent = SZ.side === "def" ? "League ranks: FG% allowed by zone" : "League ranks: FG% by zone";
+  $("#sz-rank-sub").textContent = SZ.side === "def" ? "Rank 1 = lowest FG% allowed. Share = how much of opponents' shooting comes from the zone. Click a column to sort." : "Rank 1 = highest FG%. Click a column to sort.";
+  SZ.sort ??= "fg_rim";
+  const rows = Object.entries(sq?.teams ?? {}).map(([t, v]) => ({ tid: t, ...v[SZ.side] }));
+  rows.sort((a, b) => (SZ.side === "def" ? 1 : -1) * (a[SZ.sort] - b[SZ.sort]));
+  const head = `<thead><tr><th class="l">Team</th>${ZONES.map(([z, n]) => `<th data-k="fg_${z}" ${SZ.sort === "fg_" + z ? 'aria-sort="ascending"' : ""}>${n} FG%</th><th data-k="share_${z}" ${SZ.sort === "share_" + z ? 'aria-sort="ascending"' : ""}>Share</th>`).join("")}</tr></thead>`;
+  const body = rows.map((r) => `<tr${r.tid === tid ? ' style="background:var(--panel-2)"' : ""}><td class="name">${esc(abbr(+r.tid))}<small>${esc(S.teamById[r.tid]?.name ?? "")}</small></td>${ZONES.map(([z]) => {
+      const rk = ranks[r.tid]?.["fg_" + z];
+      return `<td class="${r.tid === tid ? "hl" : ""}">${pct(r["fg_" + z])}% <small style="color:var(--muted)">${rk}</small></td><td>${pct(r["share_" + z])}%</td>`; }).join("")}</tr>`).join("");
+  const t = $("#sz-table"); t.innerHTML = head + `<tbody>${body}</tbody>`;
+  t.querySelectorAll("th[data-k]").forEach((th) => th.addEventListener("click", () => { SZ.sort = th.dataset.k; renderZones(); }));
+}
+function zoneMatchup(awayId, homeId) {
+  const sq = S.sq[S.meta.season]; if (!sq?.teams?.[awayId] || !sq?.teams?.[homeId]) return "";
+  const lg = sq.league, rD = zoneRanks("def");
+  const block = (o, d) => {
+    const off = sq.teams[o].off, def = sq.teams[d].def;
+    const rows = ZONES.map(([z, name]) => {
+      const likes = off["share_" + z] / lg["share_" + z] - 1;           // offense leans on this zone
+      const leaky = def["fg_" + z] / lg["fg_" + z] - 1;                 // defense gives up makes here
+      const edge = likes > 0.08 && leaky > 0.03 ? `<span class="edge-good">${abbr(+o)} strength meets a weak spot</span>`
+        : likes > 0.08 && leaky < -0.03 ? `<span class="edge-bad">${abbr(+o)} strength meets a strong spot</span>` : "";
+      return `<tr><td class="l">${name}</td><td>${pct(off["share_" + z], 0)}% <small style="color:var(--muted)">lg ${pct(lg["share_" + z], 0)}%</small></td><td>${pct(def["fg_" + z], 0)}% <small style="color:var(--muted)">#${rD[d]?.["fg_" + z]}</small></td><td class="l">${edge}</td></tr>`;
+    }).join("");
+    return `<table class="zm"><thead><tr><th class="l">${abbr(+o)} offense vs ${abbr(+d)} defense</th><th>${abbr(+o)} shot share</th><th>${abbr(+d)} allows FG%</th><th class="l"></th></tr></thead><tbody>${rows}</tbody></table>`;
+  };
+  return `<h4>Where the shots come from</h4><div class="sz-grid" style="margin-bottom:6px"><div>${block(awayId, homeId)}</div><div>${block(homeId, awayId)}</div></div>
+    <p class="meta">Each zone: how much the offense shoots from it against league average (lg), and the FG% the defense allows there with its rank of 30 (1 = stingiest). The simulation already plays these matchups out shot by shot.</p>`;
+}
+function initZones() {
+  $("#sz-team").innerHTML = Object.values(S.teamById).sort((a, b) => a.abbr.localeCompare(b.abbr)).map((t) => `<option value="${t.team_id}">${esc(t.abbr)} ${esc(t.name)}</option>`).join("");
+  $("#sz-team").addEventListener("input", () => { $("#sz-player").value = ""; renderZones(); });
+  $("#sz-player").addEventListener("input", renderZones);
+  document.querySelectorAll("#sz-side button").forEach((b) => b.addEventListener("click", () => { SZ.side = b.dataset.side; renderZones(); }));
 }
 
 // ---------- lineup explorer ----------
@@ -2131,6 +2292,7 @@ function showView(name) {
   if (name === "props") renderProps();
   if (name === "bets") renderBets();
   if (name === "lineups") renderLineupExplorer();
+  if (name === "zones") renderZones();
   history.replaceState(null, "", "#" + name);
 }
 
@@ -2206,6 +2368,7 @@ async function init() {
 
   renderFreshness(); renderRail(); renderGames(); renderLeaders(); renderTeams(); renderPlayers();
   initLineups();
+  initZones();
   startLive();
 
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => showView(t.dataset.view)));
@@ -2220,7 +2383,7 @@ async function init() {
   $("#fresh-toggle").addEventListener("click", (e) => { const p = $("#fresh-panel"); p.hidden = !p.hidden; e.currentTarget.setAttribute("aria-expanded", String(!p.hidden)); });
   window.addEventListener("resize", () => echarts?.getInstanceByDom($("#trend"))?.resize());
   const start = location.hash.slice(1);
-  if (["games", "bets", "props", "daily", "leaders", "teams", "lineups", "players", "model"].includes(start)) showView(start);
+  if (["games", "bets", "props", "daily", "leaders", "teams", "lineups", "zones", "players", "model"].includes(start)) showView(start);
 }
 init();
 </script>
