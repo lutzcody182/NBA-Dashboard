@@ -332,6 +332,13 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
                 "season": sid, "lineups": L.lineups(st, net), "score_state": L.score_state_pace(st),
                 "starting": L.starting_lineups(conn, sid)})
             out["files"] += [f"players/ratings_{sid}.json", f"teams/lineups_{sid}.json"]
+            try:
+                from ..models import lineup_explorer as LX
+                _write(out_dir / "teams" / f"lineup_explorer_{sid}.json", LX.build(st, sid))
+                out["files"].append(f"teams/lineup_explorer_{sid}.json")
+            except Exception as exc:
+                log.exception("Lineup explorer for %s failed", sid)
+                out["errors"].append(f"lineup explorer {sid}: {exc}")
             out.setdefault("ratings_seasons", []).append(sid)
         except Exception as exc:
             log.exception("Ratings for %s failed", sid)
