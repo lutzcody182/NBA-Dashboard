@@ -263,6 +263,21 @@ dialog.box::backdrop { background: rgba(5, 10, 16, 0.72); }
 .linescore { width: auto !important; margin-bottom: 4px; }
 .linescore td, .linescore th { text-align: center !important; min-width: 38px; }
 .linescore td:first-child, .linescore th:first-child { text-align: left !important; min-width: 60px; }
+.box-tabs { display: inline-flex; margin: 0 0 10px; }
+#shot-who { width: auto; max-width: 100%; }
+.shot-wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.shot-team h3 { margin: 4px 0 6px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.shot-team h3 small { color: var(--muted); font: 500 13px var(--body); }
+.court { width: 100%; height: auto; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.court .ln { fill: none; stroke: var(--line); stroke-width: 2.5; }
+.court .rim { fill: none; stroke: var(--muted); stroke-width: 2.5; }
+.court .shot { cursor: default; }
+.court .miss { fill: none; stroke-width: 2.5; }
+.zones { width: 100%; margin-top: 6px; }
+.zones td, .zones th { font-size: 13px; padding: 4px 8px; }
+.shot-legend { display: flex; gap: 16px; align-items: center; color: var(--muted); font-size: 12px; margin: 4px 0 10px; flex-wrap: wrap; }
+.shot-legend svg { vertical-align: middle; margin-right: 4px; }
+@media (max-width: 760px) { .shot-wrap { grid-template-columns: minmax(0, 1fr); } }
 .rail-game.has-box .st::after { content: " · box"; color: var(--muted); }
 /* Live */
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); display: inline-block; margin-right: 6px; animation: pulse 1.6s infinite; }
@@ -335,6 +350,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     <button class="tab" role="tab" data-view="daily" aria-selected="false">Daily</button>
     <button class="tab" role="tab" data-view="leaders" aria-selected="false">Leaders</button>
     <button class="tab" role="tab" data-view="teams" aria-selected="false">Teams</button>
+    <button class="tab" role="tab" data-view="lineups" aria-selected="false">Lineups</button>
     <button class="tab" role="tab" data-view="players" aria-selected="false">Players</button>
     <button class="tab" role="tab" data-view="model" aria-selected="false">Model</button>
   </nav>
@@ -460,6 +476,26 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     </div>
     <div class="table-wrap"><table id="leaders-table"></table></div>
     <p class="count" id="leaders-count"></p>
+  </section>
+
+  <!-- Lineups -->
+  <section class="view" id="view-lineups" hidden>
+    <h2>Lineup explorer</h2>
+    <p class="sub">Every group of players a team has used, from five-man units down to pairs, built from play-by-play: how they score and defend per 100 possessions, and the four factors on both ends. Net ratings over a few dozen possessions are mostly noise, so each one carries a ± margin (95%). Only a gap bigger than its margin is shaded.</p>
+    <div class="controls">
+      <label class="ctl">Season<select id="lu-season"></select></label>
+      <label class="ctl">Team<select id="lu-team"></select></label>
+      <div class="seg" role="group" aria-label="Group size" id="lu-size">
+        <button data-size="5" aria-pressed="true">5-man</button><button data-size="4" aria-pressed="false">4-man</button>
+        <button data-size="3" aria-pressed="false">3-man</button><button data-size="2" aria-pressed="false">Pairs</button>
+      </div>
+      <label class="ctl">Must include<select id="lu-with"><option value="">Anyone</option></select></label>
+      <label class="ctl">Without<select id="lu-without"><option value="">Nobody</option></select></label>
+      <label class="ctl">Min. minutes<input id="lu-min" type="number" min="0" value="0"></label>
+    </div>
+    <div class="pr-head" id="lu-head"></div>
+    <div class="table-wrap"><table id="lu-table"></table></div>
+    <p class="count" id="lu-count"></p>
   </section>
 
   <!-- Teams -->
@@ -1082,9 +1118,10 @@ function patchGameScores() {
   }
 }
 // ---------- box score dialog ----------
-const BOX = { game: null };
+const BOX = { game: null, tab: "box", who: "" };
 const espnId = (g) => g.espn_id ?? String(g.game_id).match(/(\d{9})$/)?.[1];
 async function openBox(g) {
+  if (BOX.game?.game_id !== g.game_id) { BOX.tab = "box"; BOX.who = ""; }
   BOX.game = g;
   const dlg = $("#box-dialog");
   $("#box-title").textContent = `${abbr(g.away_team_id)} ${g.away_score ?? ""} at ${abbr(g.home_team_id)} ${g.home_score ?? ""}`;
@@ -1109,6 +1146,13 @@ function renderBox() {
   const sum = LIVE.box[espnId(g)];
   if (!sum?.boxscore?.players?.length) {
     $("#box-body").innerHTML = `<p class="pr-note">The box score isn't available from ESPN yet. It usually appears a few minutes after tip-off.</p>`; return;
+  }
+  const tabs = `<div class="box-tabs seg" role="group" aria-label="View"><button data-bt="box" aria-pressed="${BOX.tab === "box"}">Box score</button><button data-bt="shots" aria-pressed="${BOX.tab === "shots"}">Shot chart</button></div>`;
+  if (BOX.tab === "shots") {
+    $("#box-body").innerHTML = tabs + shotChart(g, sum);
+    wireBoxTabs();
+    $("#shot-who")?.addEventListener("input", (e) => { BOX.who = e.target.value; renderBox(); });
+    return;
   }
   // line score by quarter
   const comps = sum.header?.competitions?.[0]?.competitors ?? [];
@@ -1148,7 +1192,89 @@ function renderBox() {
     const totals = `<tr class="tot"><td class="l">Team</td>${cols.map(([, key]) => key === "plusMinus" ? "<td></td>" : key === "minutes" ? `<td>${Math.round(tot[key])}</td>` : key.includes("-") ? `<td>${tot[key][0]}-${tot[key][1]}${pctTxt(tot[key])}</td>` : `<td>${tot[key]}</td>`).join("")}</tr>`;
     return `<h3>${esc(name)}</h3><div class="table-wrap"><table><thead><tr><th class="l">Player</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}</tr></thead><tbody>${body}${totals}</tbody></table></div>`;
   }).join("");
-  $("#box-body").innerHTML = line + tables + `<p class="count">Box score from ESPN${st.live ? ", refreshed every 30 seconds while the game is on" : ""}.</p>`;
+  const scroll = $("#box-body").scrollTop;
+  $("#box-body").innerHTML = tabs + line + tables + `<p class="count">Box score from ESPN${st.live ? ", refreshed every 30 seconds while the game is on" : ""}.</p>`;
+  $("#box-body").scrollTop = scroll;
+  wireBoxTabs();
+}
+function wireBoxTabs() {
+  document.querySelectorAll("#box-body [data-bt]").forEach((b) => b.addEventListener("click", () => { BOX.tab = b.dataset.bt; renderBox(); }));
+}
+// ---------- shot chart ----------
+// ESPN shot locations are in feet: x across the court (0-50, basket at 25), y out from the basket.
+const HOOP_Y = 5.25, SC = 10;
+function teamColor(c) {
+  const lum = (hex) => { const h = String(hex ?? "").replace("#", ""); if (h.length !== 6) return 0; const [r, g2, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255); return 0.2126 * r + 0.7152 * g2 + 0.0722 * b; };
+  for (const h of [c?.team?.color, c?.team?.alternateColor]) if (h && lum(h) > 0.18) return "#" + h.replace("#", "");
+  return "#d9e2ec";
+}
+function courtSvg(shots, color) {
+  const X = (x) => x * SC, Y = (y) => (HOOP_Y + y) * SC;
+  const r3 = 23.75, corner = Math.sqrt(r3 * r3 - 22 * 22);
+  const lines = `
+    <rect class="ln" x="0" y="0" width="500" height="470"/>
+    <rect class="ln" x="170" y="0" width="160" height="190"/>
+    <circle class="ln" cx="250" cy="190" r="60"/>
+    <path class="ln" d="M 30 0 L 30 ${Y(corner)} A ${r3 * SC} ${r3 * SC} 0 0 0 470 ${Y(corner)} L 470 0"/>
+    <path class="ln" d="M 210 ${Y(0)} A 40 40 0 0 0 290 ${Y(0)}"/>
+    <line class="ln" x1="220" y1="40" x2="280" y2="40"/>
+    <circle class="rim" cx="250" cy="${Y(0)}" r="7.5"/>
+    <path class="ln" d="M 190 470 A 60 60 0 0 1 310 470"/>`;
+  const marks = shots.map((p) => {
+    const cx = X(p.x), cy = Y(p.y);
+    const tip = `<title>${esc(p.text)} · ${esc(p.when)}</title>`;
+    return p.made
+      ? `<circle class="shot" cx="${cx}" cy="${cy}" r="7" fill="${color}" fill-opacity="0.9" stroke="var(--bg)" stroke-width="1.5">${tip}</circle>`
+      : `<g class="shot miss" stroke="var(--muted)">${tip}<line x1="${cx - 5.5}" y1="${cy - 5.5}" x2="${cx + 5.5}" y2="${cy + 5.5}"/><line x1="${cx - 5.5}" y1="${cy + 5.5}" x2="${cx + 5.5}" y2="${cy - 5.5}"/></g>`;
+  }).join("");
+  return `<svg class="court" viewBox="-6 -6 512 482" role="img" aria-label="Half-court shot chart">${lines}${marks}</svg>`;
+}
+function zoneOf(p) {
+  if (p.three) return p.corner ? "Corner three" : "Above-the-break three";
+  return p.dist <= 4 ? "At the rim" : p.dist <= 14 ? "Paint and short" : "Mid-range";
+}
+function shotChart(g, sum) {
+  const plays = sum.plays ?? [];
+  const comps = sum.header?.competitions?.[0]?.competitors ?? [];
+  const byId = Object.fromEntries(comps.map((c) => [String(c.id ?? c.team?.id), c]));
+  const shots = [];
+  let off = 0;
+  for (const p of plays) {
+    if (!p.shootingPlay || /free throw/i.test(p.text ?? "") || !p.coordinate) continue;
+    const { x, y } = p.coordinate;
+    if (!(x >= -1 && x <= 51 && y >= -6 && y <= 95)) continue;
+    if (y > 47 - HOOP_Y) { off += 1; continue; }        // beyond half court: heaves
+    const dist = Math.hypot(x - 25, y);
+    const three = p.pointsAttempted === 3 || /three point/i.test(p.text ?? "");
+    shots.push({ team: String(p.team?.id ?? ""), player: String(p.participants?.[0]?.athlete?.id ?? ""), x: Math.min(50, Math.max(0, x)), y, made: !!p.scoringPlay,
+      three, dist, corner: three && y <= 9, text: p.text ?? "", when: `${p.period?.number > 4 ? "OT" : "Q" + (p.period?.number ?? "")} ${p.clock?.displayValue ?? ""}` });
+  }
+  if (!shots.length) return `<p class="pr-note">ESPN hasn't published shot locations for this game yet.</p>`;
+  // player names from the box score
+  const names = {};
+  for (const t of sum.boxscore?.players ?? []) for (const a of t.statistics?.[0]?.athletes ?? []) names[String(a.athlete?.id)] = a.athlete?.displayName;
+  const order = [comps.find((c) => c.homeAway === "away"), comps.find((c) => c.homeAway === "home")].filter(Boolean);
+  const shooters = [...new Set(shots.map((s2) => s2.player))].filter((id) => names[id]).sort((a, b) => names[a].localeCompare(names[b]));
+  const pick = `<label class="ctl" style="margin-bottom:6px;display:inline-flex">Shooter<select id="shot-who"><option value="">Everyone</option>${order.map((c) => {
+      const tid = String(c.id ?? c.team?.id);
+      const list = shooters.filter((id) => shots.some((s2) => s2.player === id && s2.team === tid));
+      return `<optgroup label="${esc(c.team?.displayName ?? "")}">${list.map((id) => `<option value="${id}" ${BOX.who === id ? "selected" : ""}>${esc(names[id])}</option>`).join("")}</optgroup>`;
+    }).join("")}</select></label>`;
+  const legend = `<div class="shot-legend"><span><svg width="14" height="14"><circle cx="7" cy="7" r="6" fill="var(--text)"/></svg>Made</span><span><svg width="14" height="14" stroke="var(--muted)" stroke-width="2"><line x1="2" y1="2" x2="12" y2="12"/><line x1="2" y1="12" x2="12" y2="2"/></svg>Missed</span><span>Hover a shot for the play. Free throws aren't shown${off ? `; ${off} shot${off === 1 ? "" : "s"} from beyond half court left off` : ""}.</span></div>`;
+  const zoneNames = ["At the rim", "Paint and short", "Mid-range", "Corner three", "Above-the-break three"];
+  const panels = order.map((c) => {
+    const tid = String(c.id ?? c.team?.id);
+    const mine = shots.filter((s2) => s2.team === tid && (!BOX.who || s2.player === BOX.who));
+    const color = teamColor(c);
+    const made = mine.filter((s2) => s2.made).length;
+    const zrows = zoneNames.map((z) => { const zs = mine.filter((s2) => zoneOf(s2) === z); const m2 = zs.filter((s2) => s2.made).length;
+      return `<tr><td class="l">${z}</td><td>${m2}-${zs.length}</td><td>${zs.length ? pct(m2 / zs.length, 0) + "%" : "—"}</td><td>${mine.length ? pct(zs.length / mine.length, 0) + "%" : "—"}</td></tr>`; }).join("");
+    const label = BOX.who && !mine.length ? "" : `${made}-${mine.length} FG${mine.length ? `, ${pct(made / mine.length, 0)}%` : ""}`;
+    if (BOX.who && !mine.length) return "";
+    return `<div class="shot-team"><h3><span style="color:${color}">${esc(c.team?.displayName ?? "")}</span><small>${label}</small></h3>${courtSvg(mine, color)}
+      <table class="zones"><thead><tr><th class="l">Zone</th><th>FG</th><th>FG%</th><th>Share of shots</th></tr></thead><tbody>${zrows}</tbody></table></div>`;
+  }).join("");
+  return pick + legend + `<div class="shot-wrap">${panels}</div><p class="count">Shot locations from ESPN's play-by-play${g.status === "live" ? ", refreshed every 30 seconds" : ""}.</p>`;
 }
 function schedule(ms) { clearTimeout(LIVE.timer); LIVE.timer = setTimeout(liveTick, ms); }
 function startLive() {
@@ -1158,6 +1284,73 @@ function startLive() {
   dlg.addEventListener("close", () => { BOX.game = null; });
   liveTick();
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { clearTimeout(LIVE.timer); liveTick(); } });
+}
+
+// ---------- lineup explorer ----------
+const LU = { data: {}, size: "5", sort: "minutes", dir: -1 };
+const LU_COLS = [
+  ["minutes", "MIN", 1], ["n", "Poss", 0], ["ortg", "ORtg", 1], ["drtg", "DRtg", 1, -1], ["net", "Net", 1], ["pace", "Pace", 1],
+  ["efg", "eFG%", "pct"], ["tov_pct", "TOV%", "pct", -1], ["orb_pct", "ORB%", "pct"], ["ft_rate", "FT rate", "pct"], ["three_rate", "3PA rate", "pct"],
+  ["o_efg", "Opp eFG%", "pct", -1], ["o_tov_pct", "Opp TOV%", "pct"], ["drb_pct", "DRB%", "pct"], ["o_ft_rate", "Opp FT rate", "pct", -1],
+];
+const LU_TIPS = { ortg: "Points scored per 100 possessions", drtg: "Points allowed per 100 possessions", net: "ORtg minus DRtg, with its 95% margin",
+  efg: "Effective field goal %: threes count 1.5", tov_pct: "Turnovers per possession", orb_pct: "Share of own misses rebounded",
+  ft_rate: "Free throws made per field goal attempt", three_rate: "Share of shots that are threes", o_efg: "Opponents' effective FG%",
+  o_tov_pct: "Opponent turnovers per possession", drb_pct: "Share of opponent misses rebounded", o_ft_rate: "Opponent free throws made per field goal attempt",
+  n: "Possessions together (average of offense and defense)" };
+const lastName = (id) => { const n = S.players[id]?.name ?? `#${id}`; const parts = n.split(" "); return parts.length > 1 ? parts.slice(1).join(" ") : n; };
+async function loadLineups(season) {
+  if (LU.data[season] !== undefined) return LU.data[season];
+  try { LU.data[season] = await getJSON(`teams/lineup_explorer_${season}.json`); } catch (_) { LU.data[season] = null; }
+  return LU.data[season];
+}
+async function renderLineupExplorer() {
+  const season = $("#lu-season").value, team = $("#lu-team").value;
+  const table = $("#lu-table");
+  const d = await loadLineups(season);
+  const t = d?.teams?.[team];
+  if (!t) { table.innerHTML = `<tbody><tr><td class="empty">No lineup data for this team and season yet.</td></tr></tbody>`; $("#lu-head").innerHTML = ""; $("#lu-count").textContent = ""; return; }
+  document.querySelectorAll("#lu-size button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.size === LU.size)));
+  // player pickers: everyone who appears in this team's units
+  const ids = [...new Set((t["5"]?.rows ?? []).flatMap((r) => r[0]))].sort((a, b) => lastName(a).localeCompare(lastName(b)));
+  for (const [sel, blank] of [["#lu-with", "Anyone"], ["#lu-without", "Nobody"]]) {
+    const el = $(sel), keep = el.value;
+    el.innerHTML = `<option value="">${blank}</option>` + ids.map((id) => `<option value="${id}">${esc(S.players[id]?.name ?? id)}</option>`).join("");
+    if (ids.includes(+keep)) el.value = keep;
+  }
+  const withId = +$("#lu-with").value || null, withoutId = +$("#lu-without").value || null, minM = Number($("#lu-min").value) || 0;
+  const tm = t.team;
+  $("#lu-head").innerHTML = `<span>Whole team, every verified stint: <strong>${signed(tm.net, 1)}</strong> net (ORtg ${fmt(tm.ortg)}, DRtg ${fmt(tm.drtg)}) over ${fmt(tm.n, 0)} possessions</span><span>Groups need at least ${d.min_minutes?.[LU.size] ?? 0} minutes together to be listed</span>`;
+  let rows = fromCols(t[LU.size]).filter((r) => r.minutes >= minM && (!withId || r.players.includes(withId)) && (!withoutId || !r.players.includes(withoutId)));
+  const { sort, dir } = LU;
+  rows.sort((a, b) => { const x = a[sort], y = b[sort]; if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1; return dir > 0 ? x - y : y - x; });
+  const head = `<thead><tr><th class="l">Players</th>${LU_COLS.map(([k, l]) => `<th data-k="${k}" title="${esc(LU_TIPS[k] ?? "")}" ${k === sort ? `aria-sort="${dir < 0 ? "descending" : "ascending"}"` : ""}>${l}</th>`).join("")}</tr></thead>`;
+  const body = rows.map((r) => {
+    const names = r.players.map((id) => `<span title="${esc(S.players[id]?.name ?? "")}">${esc(lastName(id))}</span>`).join(" · ");
+    const cells = LU_COLS.map(([k, , d2, better]) => {
+      const v = r[k];
+      if (k === "net") {
+        const gap = v != null ? v - tm.net : null;
+        const sig = gap != null && Math.abs(gap) > r.margin;
+        return `<td title="${signed(gap, 1)} vs the team overall"><span class="flag ${sig ? (gap > 0 ? "up" : "down") : "flat"}" style="color:${sig ? "" : "var(--text)"}">${signed(v, 1)}</span> <small style="color:var(--muted)">±${fmt(r.margin, 0)}</small></td>`;
+      }
+      return `<td>${d2 === "pct" ? pct(v) : fmt(v, d2)}</td>`;
+    }).join("");
+    return `<tr><td class="name l">${names}</td>${cells}</tr>`;
+  }).join("");
+  table.innerHTML = head + `<tbody>${body || `<tr><td class="empty" colspan="${LU_COLS.length + 1}">No groups match these filters.</td></tr>`}</tbody>`;
+  table.querySelectorAll("th[data-k]").forEach((th) => th.addEventListener("click", () => {
+    const k = th.dataset.k; LU.sort = k; LU.dir = LU.sort === k && th.hasAttribute("aria-sort") ? -LU.dir : -1; renderLineupExplorer();
+  }));
+  $("#lu-count").textContent = `${rows.length} groups. Hover a column heading for what it measures. A shaded net rating is further from the team's overall net than its margin.`;
+}
+function initLineups() {
+  const seasons = [S.meta.season, S.meta.previous_season].filter(Boolean);
+  $("#lu-season").innerHTML = seasons.map((sid) => `<option value="${sid}">${sid}${sid === S.meta.season ? " (current)" : ""}</option>`).join("");
+  $("#lu-team").innerHTML = Object.values(S.teamById).sort((a, b) => a.abbr.localeCompare(b.abbr)).map((t) => `<option value="${t.team_id}">${esc(t.abbr)} ${esc(t.name)}</option>`).join("");
+  ["#lu-season", "#lu-team"].forEach((sel) => $(sel).addEventListener("input", () => { $("#lu-with").value = ""; $("#lu-without").value = ""; renderLineupExplorer(); }));
+  ["#lu-with", "#lu-without", "#lu-min"].forEach((sel) => $(sel).addEventListener("input", renderLineupExplorer));
+  document.querySelectorAll("#lu-size button").forEach((b) => b.addEventListener("click", () => { LU.size = b.dataset.size; renderLineupExplorer(); }));
 }
 
 // ---------- bets ----------
@@ -1937,6 +2130,7 @@ function showView(name) {
   if (name === "daily") renderDaily();
   if (name === "props") renderProps();
   if (name === "bets") renderBets();
+  if (name === "lineups") renderLineupExplorer();
   history.replaceState(null, "", "#" + name);
 }
 
@@ -2011,6 +2205,7 @@ async function init() {
   if (!S.logs[S.meta.season]?.length && seasons.includes(S.meta.previous_season)) $("#f-season").value = S.meta.previous_season;
 
   renderFreshness(); renderRail(); renderGames(); renderLeaders(); renderTeams(); renderPlayers();
+  initLineups();
   startLive();
 
   document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => showView(t.dataset.view)));
@@ -2025,7 +2220,7 @@ async function init() {
   $("#fresh-toggle").addEventListener("click", (e) => { const p = $("#fresh-panel"); p.hidden = !p.hidden; e.currentTarget.setAttribute("aria-expanded", String(!p.hidden)); });
   window.addEventListener("resize", () => echarts?.getInstanceByDom($("#trend"))?.resize());
   const start = location.hash.slice(1);
-  if (["games", "bets", "props", "daily", "leaders", "teams", "players", "model"].includes(start)) showView(start);
+  if (["games", "bets", "props", "daily", "leaders", "teams", "lineups", "players", "model"].includes(start)) showView(start);
 }
 init();
 </script>
