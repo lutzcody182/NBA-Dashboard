@@ -243,6 +243,27 @@ tr.sel { background: var(--panel-2); }
   .profile, .model-grid { grid-template-columns: minmax(0, 1fr); }
   .tabs { flex-wrap: wrap; }
 }
+/* Box score */
+dialog.box { width: min(1080px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--bg); color: var(--text); }
+dialog.box::backdrop { background: rgba(5, 10, 16, 0.72); }
+.box-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
+.box-head h2 { margin: 0; font-size: 22px; }
+.box-head .st { color: var(--muted); font-size: 14px; }
+.box-head .st.live { color: var(--accent); }
+.box-head button { margin-left: auto; background: none; border: 1px solid var(--line); color: var(--text); border-radius: var(--radius-sm); padding: 4px 10px; cursor: pointer; font-size: 18px; line-height: 1; }
+.box-body { padding: 12px 16px 18px; overflow: auto; }
+.box-body h3 { font: 700 17px var(--cond); margin: 16px 0 6px; }
+.box-body table td, .box-body table th { font-size: 13px; padding: 5px 8px; }
+.box-body thead th { position: static; cursor: default; }
+.box-body tr.tot td { font-weight: 700; border-top: 2px solid var(--line); }
+.box-body tbody td:first-child, .box-body thead th:first-child { position: sticky; left: 0; z-index: 1; background: var(--panel); }
+.box-body thead th:first-child { background: var(--panel-2); }
+.box-body tr.sep td { color: var(--muted); font: 600 12px var(--cond); text-transform: uppercase; letter-spacing: .04em; padding-top: 8px; }
+.box-body .dnp td { color: var(--muted); }
+.linescore { width: auto !important; margin-bottom: 4px; }
+.linescore td, .linescore th { text-align: center !important; min-width: 38px; }
+.linescore td:first-child, .linescore th:first-child { text-align: left !important; min-width: 60px; }
+.rail-game.has-box .st::after { content: " · box"; color: var(--muted); }
 /* Live */
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); display: inline-block; margin-right: 6px; animation: pulse 1.6s infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
@@ -322,6 +343,11 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
 </header>
 
 <div class="rail" id="rail" aria-label="Game slate"></div>
+
+<dialog class="box" id="box-dialog" aria-labelledby="box-title">
+  <div class="box-head"><h2 id="box-title">Box score</h2><span class="st" id="box-status"></span><button type="button" id="box-close" aria-label="Close box score">×</button></div>
+  <div class="box-body" id="box-body"></div>
+</dialog>
 
 <main>
   <section class="panel" id="fresh-panel" hidden style="margin-bottom:18px">
@@ -594,7 +620,7 @@ function renderRail() {
       const st = statusLine(g);
       const played = g.home_score != null;
       const homeWon = played && g.home_score > g.away_score;
-      parts.push(`<button class="rail-game" data-day="${key}" data-game="${g.game_id}" aria-label="${abbr(g.away_team_id)} at ${abbr(g.home_team_id)}">
+      parts.push(`<button class="rail-game ${["live", "final"].includes(g.status) ? "has-box" : ""}" data-day="${key}" data-game="${g.game_id}" aria-label="${abbr(g.away_team_id)} at ${abbr(g.home_team_id)}">
         <span class="t ${played ? (homeWon ? "l" : "w") : ""}">${abbr(g.away_team_id)}</span><span class="s ${played ? (homeWon ? "l" : "w") : ""}">${played ? g.away_score : ""}</span>
         <span class="t ${played ? (homeWon ? "w" : "l") : ""}">${abbr(g.home_team_id)}</span><span class="s ${played ? (homeWon ? "w" : "l") : ""}">${played ? g.home_score : ""}</span>
         <span class="st ${st.live ? "live" : ""}">${esc(st.text)}</span></button>`);
@@ -602,6 +628,8 @@ function renderRail() {
   }
   rail.innerHTML = parts.join("");
   rail.querySelectorAll(".rail-game[data-game]").forEach((b) => b.addEventListener("click", () => {
+    const g = (S.schedule?.[b.dataset.day]?.games ?? []).find((x) => x.game_id === b.dataset.game);
+    if (g && ["live", "final"].includes(g.status)) { openBox(g); return; }
     S.day = b.dataset.day; S.focusGame = b.dataset.game; showView("games"); renderGames();
     document.getElementById("g-" + S.focusGame)?.scrollIntoView({ block: "nearest" });
   }));
@@ -657,10 +685,13 @@ function renderGames() {
       <table class="cmp"><thead><tr><th>${esc(S.teamById[g.away_team_id]?.name ?? "")} <span class="num">${rec[g.away_team_id] ?? ""}</span></th><th></th><th style="text-align:right">${esc(S.teamById[g.home_team_id]?.name ?? "")} <span class="num">${rec[g.home_team_id] ?? ""}</span></th></tr></thead><tbody>${cmp}</tbody></table>
       ${simStrip(g)}
       ${rotSummary(g)}
-      <div class="game-foot"><span>Ranks out of 30, ${games}</span><span class="foot-btns">${S.simByGame[g.game_id] ? `<button data-sim="${g.game_id}" aria-expanded="false">Show simulation</button> ` : ""}<button data-roster="${g.game_id}" aria-expanded="false">${S.projByGame[g.game_id] ? "Show rotations" : "Show rosters"}</button></span></div>
+      <div class="game-foot"><span>Ranks out of 30, ${games}</span><span class="foot-btns">${["live", "final"].includes(g.status) ? `<button data-box="${g.game_id}">Box score</button> ` : ""}${S.simByGame[g.game_id] ? `<button data-sim="${g.game_id}" aria-expanded="false">Show simulation</button> ` : ""}<button data-roster="${g.game_id}" aria-expanded="false">${S.projByGame[g.game_id] ? "Show rotations" : "Show rosters"}</button></span></div>
       <div class="simpanel" id="s-${g.game_id}" hidden></div>
       <div class="${S.projByGame[g.game_id] ? "rot" : "roster"}" id="r-${g.game_id}" hidden></div></article>`;
   }).join("");
+  box.querySelectorAll("button[data-box]").forEach((b) => b.addEventListener("click", () => {
+    const g = (d.games ?? []).find((x) => x.game_id === b.dataset.box); if (g) openBox(g);
+  }));
   box.querySelectorAll("button[data-sim]").forEach((b) => b.addEventListener("click", () => {
     const panel = document.getElementById("s-" + b.dataset.sim);
     const open = panel.hidden;
@@ -1027,6 +1058,11 @@ async function liveTick() {
     dayOptions();
     if (view === "daily" && (!$("#d-day").dataset.picked || $("#d-day").value === LIVE.day?.date)) renderDaily();
     if (view === "bets") renderBets();
+    if (BOX.game) {
+      const fresh = ["yesterday", "today"].flatMap((k) => S.schedule?.[k]?.games ?? []).find((x) => x.game_id === BOX.game.game_id);
+      if (fresh) BOX.game = fresh;
+      renderBox();
+    }
   } catch (err) {
     LIVE.errors += 1;
     console.warn("Live update failed", err);
@@ -1045,8 +1081,81 @@ function patchGameScores() {
     if (m) m.innerHTML = `${abbr(g.away_team_id)}${g.away_score != null ? ` <span class="num">${g.away_score}</span>` : ""}<span class="at">at</span>${abbr(g.home_team_id)}${g.home_score != null ? ` <span class="num">${g.home_score}</span>` : ""}`;
   }
 }
+// ---------- box score dialog ----------
+const BOX = { game: null };
+const espnId = (g) => g.espn_id ?? String(g.game_id).match(/(\d{9})$/)?.[1];
+async function openBox(g) {
+  BOX.game = g;
+  const dlg = $("#box-dialog");
+  $("#box-title").textContent = `${abbr(g.away_team_id)} ${g.away_score ?? ""} at ${abbr(g.home_team_id)} ${g.home_score ?? ""}`;
+  $("#box-body").innerHTML = `<p class="pr-note">Loading the box score…</p>`;
+  if (!dlg.open) dlg.showModal();
+  const id = espnId(g);
+  if (id && (!LIVE.box[id] || g.status === "live" || LIVE.boxAt[id] !== "final")) {
+    try {
+      const r = await fetch(`${ESPN}/summary?event=${id}`, { cache: "no-store" });
+      if (r.ok) { LIVE.box[id] = await r.json(); if (g.status === "final") LIVE.boxAt[id] = "final"; }
+    } catch (_) { /* fall through to the message below */ }
+  }
+  renderBox();
+}
+function renderBox() {
+  const dlg = $("#box-dialog"); const g = BOX.game;
+  if (!g || !dlg.open) return;
+  const st = statusLine(g);
+  $("#box-title").textContent = `${abbr(g.away_team_id)} ${g.away_score ?? ""} at ${abbr(g.home_team_id)} ${g.home_score ?? ""}`;
+  $("#box-status").innerHTML = `${st.live ? `<span class="live-dot" aria-hidden="true"></span>` : ""}${esc(st.text)}${st.live && LIVE.updated ? ` · updated ${LIVE.updated.toLocaleTimeString("en-US", { timeZone: ET_TZ, hour: "numeric", minute: "2-digit", second: "2-digit" })}` : ""}`;
+  $("#box-status").className = "st" + (st.live ? " live" : "");
+  const sum = LIVE.box[espnId(g)];
+  if (!sum?.boxscore?.players?.length) {
+    $("#box-body").innerHTML = `<p class="pr-note">The box score isn't available from ESPN yet. It usually appears a few minutes after tip-off.</p>`; return;
+  }
+  // line score by quarter
+  const comps = sum.header?.competitions?.[0]?.competitors ?? [];
+  const order = [comps.find((c) => c.homeAway === "away"), comps.find((c) => c.homeAway === "home")].filter(Boolean);
+  const nq = Math.max(0, ...order.map((c) => c.linescores?.length ?? 0));
+  const qName = (i) => i < 4 ? `Q${i + 1}` : i === 4 ? "OT" : `${i - 3}OT`;
+  const line = nq ? `<table class="linescore"><thead><tr><th></th>${Array.from({ length: nq }, (_, i) => `<th>${qName(i)}</th>`).join("")}<th>T</th></tr></thead><tbody>${order.map((c) => {
+      const tid = teamIdFromEspn(c.team);
+      return `<tr><td class="l">${abbr(tid) !== "—" ? abbr(tid) : esc(c.team?.abbreviation ?? "")}</td>${Array.from({ length: nq }, (_, i) => `<td>${esc(c.linescores?.[i]?.displayValue ?? c.linescores?.[i]?.value ?? "")}</td>`).join("")}<td><strong>${esc(c.score ?? "")}</strong></td></tr>`;
+    }).join("")}</tbody></table>` : "";
+  // one table per team, away first
+  const teams = [...sum.boxscore.players].sort((a, b) => {
+    const ha = teamIdFromEspn(a.team) === g.home_team_id, hb = teamIdFromEspn(b.team) === g.home_team_id; return ha - hb; });
+  const cols = [["MIN", "minutes"], ["PTS", "points"], ["REB", "rebounds"], ["AST", "assists"], ["STL", "steals"], ["BLK", "blocks"], ["TO", "turnovers"],
+    ["FG", "fieldGoalsMade-fieldGoalsAttempted"], ["3PT", "threePointFieldGoalsMade-threePointFieldGoalsAttempted"], ["FT", "freeThrowsMade-freeThrowsAttempted"],
+    ["OREB", "offensiveRebounds"], ["PF", "fouls"], ["+/-", "plusMinus"]];
+  const tables = teams.map((t) => {
+    const stt = t.statistics?.[0]; if (!stt) return "";
+    const k = stt.keys ?? []; const ix = Object.fromEntries(cols.map(([, key]) => [key, k.indexOf(key)]));
+    const tid = teamIdFromEspn(t.team);
+    const name = S.teamById[tid] ? `${S.teamById[tid].city} ${S.teamById[tid].name}` : (t.team?.displayName ?? "");
+    const tot = Object.fromEntries(cols.map(([, key]) => [key, key.includes("-") ? [0, 0] : 0]));
+    const row = (a) => {
+      if (a.didNotPlay || !a.stats?.length) return `<tr class="dnp"><td class="name">${esc(a.athlete?.displayName ?? "")}</td><td class="l" colspan="${cols.length}">${esc(a.reason || "Did not play")}</td></tr>`;
+      const cells = cols.map(([, key]) => {
+        const v = a.stats[ix[key]] ?? "";
+        if (key.includes("-")) { const [m, x] = pair(v); tot[key][0] += m; tot[key][1] += x; }
+        else if (key !== "plusMinus") tot[key] += num(v);
+        return `<td>${esc(v)}</td>`;
+      }).join("");
+      return `<tr><td class="name">${esc(a.athlete?.displayName ?? "")}${a.athlete?.position?.abbreviation ? `<small>${esc(a.athlete.position.abbreviation)}</small>` : ""}</td>${cells}</tr>`;
+    };
+    const ath = stt.athletes ?? [];
+    const starters = ath.filter((a) => a.starter), bench = ath.filter((a) => !a.starter);
+    const body = `<tr class="sep"><td colspan="${cols.length + 1}">Starters</td></tr>${starters.map(row).join("")}<tr class="sep"><td colspan="${cols.length + 1}">Bench</td></tr>${bench.map(row).join("")}`;
+    const pctTxt = (a) => a[1] ? ` <small style="color:var(--muted)">${(100 * a[0] / a[1]).toFixed(0)}%</small>` : "";
+    const totals = `<tr class="tot"><td class="l">Team</td>${cols.map(([, key]) => key === "plusMinus" ? "<td></td>" : key === "minutes" ? `<td>${Math.round(tot[key])}</td>` : key.includes("-") ? `<td>${tot[key][0]}-${tot[key][1]}${pctTxt(tot[key])}</td>` : `<td>${tot[key]}</td>`).join("")}</tr>`;
+    return `<h3>${esc(name)}</h3><div class="table-wrap"><table><thead><tr><th class="l">Player</th>${cols.map(([l]) => `<th>${l}</th>`).join("")}</tr></thead><tbody>${body}${totals}</tbody></table></div>`;
+  }).join("");
+  $("#box-body").innerHTML = line + tables + `<p class="count">Box score from ESPN${st.live ? ", refreshed every 30 seconds while the game is on" : ""}.</p>`;
+}
 function schedule(ms) { clearTimeout(LIVE.timer); LIVE.timer = setTimeout(liveTick, ms); }
 function startLive() {
+  const dlg = $("#box-dialog");
+  $("#box-close").addEventListener("click", () => dlg.close());
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+  dlg.addEventListener("close", () => { BOX.game = null; });
   liveTick();
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { clearTimeout(LIVE.timer); liveTick(); } });
 }
