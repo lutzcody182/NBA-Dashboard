@@ -183,6 +183,7 @@ def _fetch_pbp(conn, provider, game_id, summary) -> None:
     for r in conn.execute("SELECT team_id, player_id FROM player_game_stats WHERE game_id = ? AND started = 1",
                           (game_id,)):
         starters.setdefault(r[0], []).append(r[1])
+    store_shots(conn, game_id, actions, row[0], row[1])
     g = parse_actions(game_id, actions, row[0], row[1], starters)
     check_against_box(conn, g)
     store_pbp(conn, g, provider.name)
@@ -198,6 +199,26 @@ def _fetch_pbp(conn, provider, game_id, summary) -> None:
     summary["pbp_fetched"] += 1
     if g.quality < 0.995 or any(not s.ok for s in g.stints):
         summary["pbp_low_quality"] += 1
+
+
+def store_shots(conn, game_id, actions, home_id, away_id) -> int:
+    """Every field goal attempt with a court location (ESPN play-by-play gives feet from the basket)."""
+    rows = []
+    for a in actions:
+        if a.get("actionType") not in ("2pt", "3pt") or a.get("xFt") is None or not a.get("personId"):
+            continue
+        team = a.get("teamId")
+        if team not in (home_id, away_id):
+            continue
+        rows.append((game_id, int(a.get("orderNumber") or len(rows)), team, away_id if team == home_id else home_id,
+                     int(a["personId"]), int(a.get("period") or 0), a.get("clock"), float(a["xFt"]), float(a["yFt"]),
+                     a.get("zone"), 3 if a["actionType"] == "3pt" else 2, 1 if a.get("shotResult") == "Made" else 0))
+    if not rows:
+        return 0
+    conn.execute("DELETE FROM shot_locations WHERE game_id = ?", (game_id,))
+    conn.executemany("""INSERT OR REPLACE INTO shot_locations (game_id, shot_num, team_id, def_team_id, player_id, period,
+                        clock, x, y, zone, points, made) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
+    return len(rows)
 
 
 def check_against_box(conn, g) -> None:
