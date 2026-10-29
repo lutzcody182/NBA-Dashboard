@@ -9,7 +9,7 @@ from pathlib import Path
 from . import config
 from .util import utc_now_iso
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _STINT_STATS = (
     "fga", "fgm", "fg3a", "fg3m", "fta", "ftm", "oreb", "dreb", "tov", "pf", "ast", "stl", "blk",
@@ -89,6 +89,27 @@ MIGRATIONS = {
         );
     """,
 }
+
+MIGRATIONS[3] = """
+    CREATE TABLE IF NOT EXISTS shot_locations (
+        game_id       TEXT NOT NULL,
+        shot_num      INTEGER NOT NULL,   -- order in the game
+        team_id       INTEGER NOT NULL,   -- shooting team
+        def_team_id   INTEGER NOT NULL,   -- defending team
+        player_id     INTEGER NOT NULL,
+        period        INTEGER NOT NULL,
+        clock         TEXT,
+        x             REAL NOT NULL,      -- feet across the court, basket at 25
+        y             REAL NOT NULL,      -- feet out from the basket
+        zone          TEXT,               -- rim, paint, mid, c3, ab3
+        points        INTEGER NOT NULL,   -- 2 or 3 attempted
+        made          INTEGER NOT NULL,
+        PRIMARY KEY (game_id, shot_num)
+    );
+    CREATE INDEX IF NOT EXISTS idx_shots_team ON shot_locations(team_id);
+    CREATE INDEX IF NOT EXISTS idx_shots_def ON shot_locations(def_team_id);
+    CREATE INDEX IF NOT EXISTS idx_shots_player ON shot_locations(player_id);
+"""
 
 # Columns added to existing tables (ALTER TABLE cannot run inside executescript safely
 # when the column may already exist, so these are applied one by one).
