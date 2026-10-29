@@ -303,3 +303,20 @@ def test_missed_heave_is_not_a_shot_attempt(conn):
     made = dict(heave, scoringPlay=True, scoreValue=3, text="Paul George makes heave jump shot")
     s["plays"][-1] = made
     assert convert_plays(s, athletes)[-1]["actionType"] == "3pt"
+
+
+def test_shot_locations_are_saved(conn):
+    from pipeline.ingest.update import store_shots
+    s = summary()
+    box, athletes = parse_box(s, PlayerIds(conn))
+    actions = convert_plays(s, athletes)
+    n = store_shots(conn, GID, actions, DET, BOS)
+    rows = conn.execute("SELECT team_id, def_team_id, player_id, x, y, zone, points, made FROM shot_locations").fetchall()
+    assert n == len(rows) > 20
+    tatum = athletes["4065648"][0]
+    mine = [r for r in rows if r[2] == tatum]
+    assert len(mine) == 9 and sum(r[7] for r in mine) == 3            # 3-9 FG, as in the box score
+    assert all(r[0] == BOS and r[1] == DET for r in mine)
+    assert {r[5] for r in mine} == {"rim", "paint", "mid", "ab3"} and all(0 <= r[3] <= 50 for r in rows)
+    assert store_shots(conn, GID, actions, DET, BOS) == n             # re-reading a game replaces, not duplicates
+    assert conn.execute("SELECT COUNT(*) FROM shot_locations").fetchone()[0] == n
