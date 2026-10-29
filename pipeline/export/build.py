@@ -372,6 +372,13 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
         sims = game_sims.build(conn, season, games, proj, rated.get(season))
         _write(out_dir / "sims.json", sims)
         out["files"].append("sims.json")
+        try:
+            from .shots import build as build_shots
+            _write(out_dir / "teams" / f"shot_maps_{season}.json", build_shots(conn, season))
+            out["files"].append(f"teams/shot_maps_{season}.json")
+        except Exception as exc:
+            log.exception("Shot maps failed")
+            out["errors"].append(f"shot maps: {exc}")
         sq = game_sims.team_shot_quality(conn, season)
         if sq:
             _write(out_dir / "teams" / f"shot_quality_{season}.json", sq)
