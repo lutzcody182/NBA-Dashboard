@@ -243,6 +243,20 @@ tr.sel { background: var(--panel-2); }
   .profile, .model-grid { grid-template-columns: minmax(0, 1fr); }
   .tabs { flex-wrap: wrap; }
 }
+/* Matchup spotlight */
+.spot { margin-bottom: 18px; }
+.spot h3 { margin: 0 0 2px; }
+.spot .spot-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 24px; margin-top: 8px; }
+.spot h4 { margin: 4px 0 4px; font: 700 14px var(--cond); text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+.spot ol { list-style: none; margin: 0; padding: 0; }
+.spot li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; padding: 7px 0; border-top: 1px solid var(--line); }
+.spot li:first-child { border-top: 0; }
+.spot .who { font-weight: 600; }
+.spot .who small { color: var(--muted); font-weight: 500; margin-left: 6px; }
+.spot .eff { font: 700 17px var(--cond); text-align: right; }
+.spot .why { grid-column: 1 / -1; color: var(--muted); font-size: 12.5px; }
+.spot details { margin-top: 8px; color: var(--muted); font-size: 13px; }
+@media (max-width: 760px) { .spot .spot-grid { grid-template-columns: minmax(0, 1fr); } }
 /* Shot zones */
 .sz-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-bottom: 18px; }
 .sz-grid > .panel { min-width: 0; }
@@ -396,6 +410,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     </div>
     <h2 id="games-title">Games</h2>
     <p class="sub">Season ratings for both teams, side by side, and each team's projected rotation from the latest official injury report. Opponent-adjusted ratings correct for who each team has played. The bar under each game is 10,000 simulated games: who wins how often, the projected score, spread and total. Open the simulation for the spread of outcomes, what moved it, and player projections.</p>
+    <section class="panel spot" id="spotlight" hidden></section>
     <div class="games" id="games"></div>
   </section>
 
@@ -735,6 +750,7 @@ function renderGames() {
   const byTeam = Object.fromEntries(rows.map((r) => [r.team_id, r]));
   const ranks = Object.fromEntries(CMP_ROWS.map(([k, , dir]) => [k, ratingRanks(rows, k, dir === 0 ? 1 : dir)]));
   const rec = S.schedule.records ?? {};
+  renderSpotlight(d);
   box.innerHTML = d.games.map((g) => {
     const a = byTeam[g.away_team_id], h = byTeam[g.home_team_id];
     const st = statusLine(g);
@@ -1319,6 +1335,74 @@ function startLive() {
   dlg.addEventListener("close", () => { BOX.game = null; });
   liveTick();
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { clearTimeout(LIVE.timer); liveTick(); } });
+}
+
+// ---------- matchup spotlight ----------
+// How much of each projected scorer's points tonight come from the opponent's zone defense.
+// The team-level effect is the one that tested as real: the offense's zone mix against what the
+// defense allows in each zone, at league make rates. A player's own zones are shown as context only.
+const ZVAL = { rim: 2, paint: 2, mid: 2, c3: 3, ab3: 3 };
+function teamZoneFactor(offId, defId) {
+  const sq = S.sq[S.meta.season]; const lg = sq?.league;
+  const off = sq?.teams?.[offId]?.off, def = sq?.teams?.[defId]?.def;
+  if (!off || !def || !lg) return null;
+  let num = 0, den = 0, adjTot = 0;
+  const adj = {};
+  for (const [z] of ZONES) { adj[z] = off["share_" + z] * (def["share_" + z] / lg["share_" + z]); adjTot += adj[z]; }
+  for (const [z] of ZONES) {
+    num += (adj[z] / adjTot) * lg["fg_" + z] * (def["fg_" + z] / lg["fg_" + z]) * ZVAL[z];
+    den += off["share_" + z] * lg["fg_" + z] * ZVAL[z];
+  }
+  return num / den;
+}
+function playerZoneNote(pid, offId, defId) {
+  const sq = S.sq[S.meta.season]; const lg = sq?.league, def = sq?.teams?.[defId]?.def;
+  const p = SZ.maps?.players?.[String(pid)];
+  if (!p || !def) return "";
+  const ranks = zoneRanks("def")[defId] ?? {};
+  // the zone that matters most for him: his share there times how far the defense is from average
+  let best = null;
+  for (const [z, name] of ZONES) {
+    const share = p.zones[z][0] / p.fga;
+    const gap = def["fg_" + z] / lg["fg_" + z] - 1;
+    const w = share * gap * ZVAL[z];
+    if (!best || Math.abs(w) > Math.abs(best.w)) best = { z, name, share, w, gap };
+  }
+  if (!best || Math.abs(best.gap) < 0.01) return `Shoots from all over; ${abbr(+defId)} is about average in his zones.`;
+  return `${pct(best.share, 0)}% of his shots are ${best.name.toLowerCase()}; ${abbr(+defId)} allows ${pct(def["fg_" + best.z], 0)}% there (league ${pct(lg["fg_" + best.z], 0)}%, rank ${ranks["fg_" + best.z] ?? "—"} of 30).`;
+}
+async function renderSpotlight(day) {
+  const box = $("#spotlight");
+  const games = (day?.games ?? []).filter((g) => g.status === "scheduled" && S.simByGame[g.game_id]);
+  if (!games.length || !S.sq[S.meta.season]) { box.hidden = true; return; }
+  if (SZ.maps === undefined) { try { SZ.maps = await getJSON(`teams/shot_maps_${S.meta.season}.json`); } catch (_) { SZ.maps = null; } }
+  const rows = [];
+  for (const g of games) {
+    const sim = S.simByGame[g.game_id];
+    for (const [off, def] of [[g.home_team_id, g.away_team_id], [g.away_team_id, g.home_team_id]]) {
+      const F = teamZoneFactor(off, def); if (F == null) continue;
+      for (const p of sim.teams?.[String(off)]?.players ?? []) {
+        if (p.min < 20 || p.pts < 8) continue;
+        // projection already includes the matchup: points due to it = pts x (1 - 1/F)
+        rows.push({ pid: p.player_id, name: p.name, off, def, pts: p.pts, eff: p.pts * (1 - 1 / F), F, game: g });
+      }
+    }
+  }
+  if (!rows.length) { box.hidden = true; return; }
+  const capped = (list, n) => { const per = {}; return list.filter((r) => (per[r.off] = (per[r.off] ?? 0) + 1) <= 3).slice(0, n); };
+  const up = capped(rows.filter((r) => r.eff > 0.05).sort((a, b) => b.eff - a.eff), 8);
+  const down = capped(rows.filter((r) => r.eff < -0.05).sort((a, b) => a.eff - b.eff), 6);
+  const li = (r) => `<li><span class="who">${esc(r.name)}<small>${abbr(r.off)} ${r.off === r.game.home_team_id ? "vs" : "@"} ${abbr(r.def)} · ${fmtTime(r.game.tip_utc)}</small></span>
+    <span class="eff ${r.eff > 0 ? "res-won" : "res-lost"}">${signed(r.eff, 1)} pts</span>
+    <span class="why">Projected ${fmt(r.pts, 1)} pts; ${abbr(r.def)}'s zone defense moves ${abbr(r.off)}'s expected points per shot ${signed(100 * (r.F - 1), 1)}%. ${esc(playerZoneNote(r.pid, r.off, r.def))}</span></li>`;
+  box.hidden = false;
+  box.innerHTML = `<h3>Matchup spotlight: ${fmtDay(day.date)}</h3>
+    <p class="pr-note">Players whose projection gets the biggest lift, or drag, from where their team shoots against where tonight's defense is strong or weak. The points are already in each player's projection; this shows how much of it comes from the matchup.</p>
+    <div class="spot-grid"><div><h4>Biggest boosts</h4><ol>${up.map(li).join("") || `<li class="why">No team has a clear edge tonight.</li>`}</ol></div>
+    <div><h4>Toughest matchups</h4><ol>${down.map(li).join("") || `<li class="why">No team has a clear disadvantage tonight.</li>`}</ol></div></div>
+    <details><summary>How this is worked out, and what it can't tell you</summary>
+      <p>For each team: its shot mix by zone, reweighted by how often tonight's defense lets opponents shoot from each zone, and scored at the FG% that defense allows there, compared with the same shots against an average defense. That ratio is applied to the player's projected points. Teammates get the same percentage, so higher scorers show bigger numbers.</p>
+      <p>The note on each player is context: where he shoots against what the defense allows there. Tested on the last two full seasons, a player's own shot locations didn't predict his scoring against a defense any better than his team's did, so it doesn't change the number.</p></details>`;
 }
 
 // ---------- shot zones ----------
