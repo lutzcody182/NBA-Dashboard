@@ -122,7 +122,7 @@ def test_export_writes_everything(sim, tmp_path):
             return [e for k, v in x.items() for e in (v if k == "errors" and isinstance(v, list) else errors(v))]
         return [e for v in x for e in errors(v)] if isinstance(x, list) else []
     # parts that fail are caught and logged so the site still updates; none should fail here
-    assert not [e for e in errors(res) if "analytics" in str(e)]
+    assert not [e for e in errors(res) if "analytics" in str(e) or "scorecard" in str(e)]
     meta = json.loads((tmp_path / "meta.json").read_text())
     assert meta["season"] == "2025-26"
     assert len(meta["teams"]) == 30
