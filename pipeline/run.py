@@ -13,7 +13,8 @@ from datetime import datetime
 
 from . import db
 from .export.build import export_all
-from .ingest.update import backfill_regular_season, load_archive_season, update_current_season
+from .ingest.update import (PLAYS_FROM_YEAR, backfill_plays, backfill_regular_season, load_archive_season,
+                            update_current_season)
 from .providers.nba_cdn import NbaCdnProvider
 
 
@@ -90,6 +91,15 @@ def main(argv=None) -> int:
         result["update"] = update_current_season(conn, provider)
         result["injuries"] = run_injuries(conn)
     elif args.cmd == "update":
+        # one time: build last season's play log from the archive (used by the analytics)
+        done = conn.execute("SELECT 1 FROM data_freshness WHERE dataset = ? AND status = 'ok'",
+                            (f"plays_{PLAYS_FROM_YEAR}",)).fetchone()
+        if not done:
+            try:
+                result["plays_backfill"] = backfill_plays(conn, PLAYS_FROM_YEAR)
+            except Exception as exc:
+                result["plays_backfill"] = {"error": str(exc)}
+                db.mark_attempt(conn, f"plays_{PLAYS_FROM_YEAR}", False, str(exc))
         result["update"] = update_current_season(conn, provider, args.refresh_days)
         result["injuries"] = run_injuries(conn)
     if args.cmd in ("update", "setup"):
