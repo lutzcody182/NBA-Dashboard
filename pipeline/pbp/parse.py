@@ -280,6 +280,10 @@ def parse_actions(game_id: str, actions: list, home_id: int, away_id: int,
                         lineups[t].discard(p)
                 continue
 
+            # for the play-by-play log (plays.py): game time and the stint this play belongs to
+            a["_t"] = t_now
+            a["_stint"] = len(game.stints) + 1
+
             if stint["lineups"] is None and kind not in ("period", "game"):
                 stint["lineups"] = {t: tuple(sorted(lineups[t])) for t in teams}
                 if any(len(v) != 5 for v in stint["lineups"].values()):
