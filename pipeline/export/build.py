@@ -379,6 +379,12 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
         except Exception as exc:
             log.exception("Shot maps failed")
             out["errors"].append(f"shot maps: {exc}")
+        try:
+            from .analytics import write_files as write_analytics
+            out["files"] += write_analytics(conn, out_dir, season, _write, generated[:10])
+        except Exception as exc:
+            log.exception("Analytics failed")
+            out["errors"].append(f"analytics: {exc}")
         sq = game_sims.team_shot_quality(conn, season)
         if sq:
             _write(out_dir / "teams" / f"shot_quality_{season}.json", sq)
