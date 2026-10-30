@@ -268,7 +268,7 @@ dialog.pcard { width: min(1180px, calc(100vw - 32px)); }
 .lab-grid { margin-bottom: 14px; }
 table.lab td small { font-size: 11px; }
 .rotmap { overflow-x: auto; }
-#lab-body .up, #pc-body .up { color: var(--good); } #lab-body .down, #pc-body .down { color: var(--bad); }
+#lab-body .up, #pc-body .up, #sc-body .up { color: var(--good); } #lab-body .down, #pc-body .down, #sc-body .down { color: var(--bad); }
 .rot-row { display: grid; grid-template-columns: 110px repeat(48, minmax(7px, 1fr)) 44px; align-items: center; gap: 1px; min-width: 560px; }
 .rot-row > span { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 6px; }
 .rot-row > i { height: 18px; background: var(--accent); opacity: calc(0.06 + 0.94 * var(--a, 0)); border-radius: 1px; }
@@ -665,6 +665,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
   <section class="view" id="view-model" hidden>
     <h2>How the models are tested</h2>
     <p class="sub">Every setting below was chosen by training on earlier games and scoring predictions on later games the model had not seen. Each model is compared with a simple baseline, so you can see whether the extra work actually helps.</p>
+    <div class="panel" id="scorecard" style="margin-bottom:16px"><h3>Scorecard: is it getting sharper?</h3><div id="sc-body"><p class="pr-note">Loading…</p></div></div>
     <div class="model-grid">
       <div class="panel"><h3>Player ratings</h3><div id="m-ratings"></div></div>
       <div class="panel"><h3>Minutes projections</h3><div id="m-minutes"></div></div>
@@ -2944,12 +2945,65 @@ function pcAnalytics(pid, teamId, logs) {
   return out.join("");
 }
 
+
+// ---------- weekly scorecard ----------
+const SCORE = { data: undefined, mode: "week" };
+async function renderScorecard() {
+  if (SCORE.data === undefined) { try { SCORE.data = await getJSON("scorecard.json"); } catch (_) { SCORE.data = null; } }
+  const d = SCORE.data, el = $("#sc-body");
+  if (!d?.weeks?.length) { el.innerHTML = `<p class="pr-note">No graded games yet. The scorecard fills in as games with a saved pregame prediction finish.</p>`; return; }
+  const W = SCORE.mode === "week";
+  const pick = (w) => W ? w : w.to_date;
+  // lower is better for every number compared here; better = model below its baseline
+  const vs = (m, b, dec = 2, unit = "") => m == null ? "—" : b == null ? `${fmt(m, dec)}${unit}` :
+    `<span class="${m < b ? "up" : m > b ? "down" : ""}">${fmt(m, dec)}${unit}</span> <small style="color:var(--muted)">vs ${fmt(b, dec)}</small>`;
+  const rows = d.weeks.slice().reverse().map((w) => {
+    const x = pick(w), g = x.games, p = x.players, pr = x.props, b = x.bets;
+    return `<tr><td class="l">${W ? "Week of " : "Through week of "}${fmtDay(w.week)}</td>
+      <td>${g ? `${g.n} · ${pct(g.accuracy, 0)}%` : "—"}</td>
+      <td>${g ? vs(g.brier_model_same ?? g.brier, g.brier_market, 3) : "—"}</td>
+      <td>${g ? `${fmt(g.margin_mae, 1)} <small style="color:var(--muted)">bias ${signed(g.margin_bias, 1)}</small>` : "—"}</td>
+      <td>${g ? `${fmt(g.total_mae, 1)} <small style="color:var(--muted)">bias ${signed(g.total_bias, 1)}</small>` : "—"}</td>
+      <td>${p?.min ? vs(p.min.mae, p.min.base_mae, 1) : "—"}</td>
+      <td>${p?.pts ? vs(p.pts.mae, p.pts.base_mae, 2) : "—"}</td>
+      <td>${p?.reb ? vs(p.reb.mae, p.reb.base_mae, 2) : "—"}</td>
+      <td>${p?.ast ? vs(p.ast.mae, p.ast.base_mae, 2) : "—"}</td>
+      <td>${p?.fg3m ? vs(p.fg3m.mae, p.fg3m.base_mae, 2) : "—"}</td>
+      <td>${pr ? `${vs(pr.brier, pr.brier_market, 3)} <small style="color:var(--muted)">${pr.n.toLocaleString()}</small>` : "—"}</td>
+      <td>${b ? `<span class="${b.units > 0 ? "up" : b.units < 0 ? "down" : ""}">${signed(b.units, 2)}u</span> <small style="color:var(--muted)">${b.n} bets</small>` : "—"}</td>
+      <td>${b?.avg_clv != null ? `${signed(100 * b.avg_clv, 1)}% <small style="color:var(--muted)">${pct(b.beat_close, 0)}% beat</small>` : "—"}</td></tr>`;
+  }).join("");
+  // trend: how much better than its baseline, season to date, in percent (positive = model better)
+  const imp = (m, b) => m != null && b ? 100 * (b - m) / b : null;
+  const series = [
+    ["Games vs closing line", (x) => imp(x.games?.brier_model_same, x.games?.brier_market)],
+    ["Points vs recent average", (x) => imp(x.players?.pts?.mae, x.players?.pts?.base_mae)],
+    ["Minutes vs recent average", (x) => imp(x.players?.min?.mae, x.players?.min?.base_mae)],
+    ["Props vs market", (x) => imp(x.props?.brier, x.props?.brier_market)],
+  ];
+  const chart = d.weeks.length >= 2 && window.echarts ? `<div id="sc-chart" style="height:220px;margin-top:10px"></div>` :
+    d.weeks.length >= 2 ? "" : `<p class="pr-note">The trend chart appears once there are two weeks of graded games.</p>`;
+  el.innerHTML = `<p class="pr-note" style="margin-top:0">Graded only from what the model said before tip-off (the last pregame snapshot), never recomputed afterwards. Every number here is an error, so lower is better; green means the model beat what it is compared with: the closing moneyline from legal books (game win chances), each player's average over his previous ${d.base_games} games (player numbers) and the market's no-vig chance at the same pull (props). ${d.graded_games} games graded so far.</p>
+    <div class="controls"><div class="seg" role="group" aria-label="Period" id="sc-mode"><button data-m="week" aria-pressed="${W}">Each week</button><button data-m="todate" aria-pressed="${!W}">Season to date</button></div></div>
+    <div class="table-wrap"><table class="lab"><thead><tr><th class="l">Week</th><th title="Games graded and share of winners picked">Games · winners</th><th title="Brier score of the win chance (lower is better) vs the closing moneyline on the same games">Win chance</th><th title="Average miss on the final margin, in points; bias = projected minus actual">Margin miss</th><th title="Average miss on total points; bias = projected minus actual">Total miss</th><th title="Average miss in minutes vs his recent average">Minutes</th><th>Points</th><th>Rebounds</th><th>Assists</th><th>Threes</th><th title="Brier score of the over chance vs the market's; number of props">Props</th><th>Bets</th><th title="Average closing-line value and share of bets that beat the close">CLV</th></tr></thead><tbody>${rows}</tbody></table></div>${chart}`;
+  document.querySelectorAll("#sc-mode button").forEach((b) => b.addEventListener("click", () => { SCORE.mode = b.dataset.m; renderScorecard(); }));
+  if (d.weeks.length >= 2 && window.echarts) {
+    const c = echarts.init($("#sc-chart"), null, { renderer: "svg" });
+    const css = getComputedStyle(document.documentElement), col = (v) => css.getPropertyValue(v).trim();
+    c.setOption({ grid: { left: 40, right: 12, top: 30, bottom: 28 }, tooltip: { trigger: "axis", valueFormatter: (v) => v == null ? "—" : `${v.toFixed(1)}% better` },
+      legend: { top: 0, textStyle: { color: col("--muted") } },
+      xAxis: { type: "category", data: d.weeks.map((w) => fmtDay(w.week)), axisLabel: { color: col("--muted") } },
+      yAxis: { type: "value", axisLabel: { color: col("--muted"), formatter: "{value}%" }, splitLine: { lineStyle: { color: col("--line") } } },
+      series: series.map(([n, f]) => ({ name: n, type: "line", data: d.weeks.map((w) => { const v = f(w.to_date); return v == null ? null : +v.toFixed(2); }), connectNulls: true })) });
+  }
+}
+
 // ---------- navigation ----------
 function showView(name) {
   document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.view === name)));
   document.querySelectorAll(".view").forEach((v) => (v.hidden = v.id !== "view-" + name));
   if (name === "teams" && S.teamsView.team) setTimeout(() => echarts?.getInstanceByDom($("#trend"))?.resize(), 0);
-  if (name === "model") { renderModel(); renderSimModel(); }
+  if (name === "model") { renderModel(); renderSimModel(); renderScorecard(); }
   if (name === "daily") renderDaily();
   if (name === "props") renderProps();
   if (name === "bets") renderBets();
