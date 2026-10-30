@@ -5,7 +5,8 @@ from zoneinfo import ZoneInfo
 
 from .. import db
 from ..pbp.parse import parse_actions
-from .pbp_store import store_archive_game, store_pbp
+from ..pbp.plays import extract as extract_plays
+from .pbp_store import store_archive_game, store_pbp, store_plays
 from .store import store_boxscore, store_schedule, sync_rosters
 
 log = logging.getLogger(__name__)
@@ -187,6 +188,7 @@ def _fetch_pbp(conn, provider, game_id, summary) -> None:
     g = parse_actions(game_id, actions, row[0], row[1], starters)
     check_against_box(conn, g)
     store_pbp(conn, g, provider.name)
+    store_plays(conn, game_id, *extract_plays(game_id, actions, row[0], row[1]))
     if getattr(provider, "minutes_from_pbp", False) and g.quality >= 0.995 and all(s.ok for s in g.stints):
         # The box score only had whole minutes; use the exact on-court time instead.
         for pid, p in g.players.items():
@@ -264,6 +266,8 @@ def load_archive_season(conn, start_year: int, frame=None) -> dict:
             store_pbp(conn, g, "archive")
         else:
             store_archive_game(conn, g, actions, "archive")
+        if start_year >= PLAYS_FROM_YEAR:
+            store_plays(conn, gid, *extract_plays(gid, actions, home, away))
         summary["games"] += 1
         summary["low_quality"] += int(g.quality < 0.995 or any(not s.ok for s in g.stints))
         if summary["games"] % 200 == 0:
@@ -273,3 +277,29 @@ def load_archive_season(conn, start_year: int, frame=None) -> dict:
     db.mark_attempt(conn, f"archive_{start_year}", True,
                     f'{summary["games"]} games loaded, {summary["low_quality"]} with unverified lineups')
     return summary
+
+
+PLAYS_FROM_YEAR = 2025     # the play log (pbp_plays, pbp_poss) is kept from 2025-26 on
+
+
+def backfill_plays(conn, start_year: int, frame=None) -> dict:
+    """Build the play log for a past season already in the database (one-time, from the archive)."""
+    from ..providers.archive import download_season, split_games
+
+    df = frame if frame is not None else download_season(start_year)
+    have = {r[0] for r in conn.execute("SELECT DISTINCT game_id FROM pbp_plays")}
+    known = {r[0] for r in conn.execute("SELECT game_id FROM games")}
+    out = {"season_start": start_year, "games": 0, "skipped": 0}
+    for gid, actions, home, away in split_games(df):
+        if gid in have or gid not in known:
+            out["skipped"] += 1
+            continue
+        parse_actions(gid, actions, home, away)          # marks each action with its time and stint
+        store_plays(conn, gid, *extract_plays(gid, actions, home, away))
+        out["games"] += 1
+        if out["games"] % 200 == 0:
+            conn.commit()
+    conn.commit()
+    db.mark_attempt(conn, f"plays_{start_year}", True, f'{out["games"]} games')
+    return out
+
