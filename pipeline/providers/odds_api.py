@@ -35,7 +35,7 @@ LEGAL_BOOKS = {
 MAX_PULLS_PER_DAY = 8
 MIN_HOURS_BETWEEN = 1.25          # never closer than this
 DAILY_CREDIT_CAP = 450            # about 13,500 a month on a full schedule; the plan has 20,000
-LOOKAHEAD_HOURS = 8
+LOOKAHEAD_HOURS = 15               # from ~8 AM ET this covers the whole evening slate
 RESERVE_CREDITS = 1500
 SOURCE = "odds_api"
 
@@ -215,6 +215,9 @@ def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = N
         return out
     teams = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT team_id, city, name FROM teams")}
     events, remaining = _get("/events", key, {"dateFormat": "iso"})
+    # the free events call reports the balance right before this pull, so the cost below
+    # is only what this pull spent (not credits used elsewhere since the last pull)
+    before = remaining if remaining is not None else state.get("remaining")
     fetched_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     stored, matched, unmatched_names, unmatched_events, errors = 0, 0, set(), [], []
     for ev in events:
@@ -268,7 +271,6 @@ def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = N
             errors.append(f"game lines: {exc}")
     conn.commit()
     state["pulls"] = state.get("pulls", [])[-30:]
-    before = state.get("remaining")
     cost = (before - remaining) if before is not None and remaining is not None and before >= remaining \
         else pull_cost(matched)
     state["pulls"].append({"at": fetched_at, "et_day": et_day, "games": matched, "rows": stored, "game_rows": game_rows,
