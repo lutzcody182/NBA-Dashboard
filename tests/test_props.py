@@ -54,6 +54,11 @@ def test_pull_budget():
     late = {"pulls": [{"at": "2026-10-28T14:00:00Z", "et_day": "2026-10-28", "cost": OA.DAILY_CREDIT_CAP - 20}]}
     assert not OA.should_pull(late, NOW, [NOW + timedelta(hours=6)], "2026-10-28")[0]
     assert not OA.should_pull({"pulls": [], "remaining": 100}, NOW, tip, "2026-10-28")[0]
+    # nothing before 8 AM Eastern (the 5 AM box-score run used to spend a pull on thin overnight lines)
+    early = datetime(2026, 10, 30, 9, 56, tzinfo=timezone.utc)          # 5:56 AM EDT
+    assert not OA.should_pull({"pulls": []}, early, [early + timedelta(hours=13)], "2026-10-30")[0]
+    eight = datetime(2026, 10, 30, 12, 5, tzinfo=timezone.utc)          # 8:05 AM EDT
+    assert OA.should_pull({"pulls": []}, eight, [eight + timedelta(hours=10)], "2026-10-30")[0]
 
 
 def test_devig_and_prices():
