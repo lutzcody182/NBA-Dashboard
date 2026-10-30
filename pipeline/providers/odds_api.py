@@ -34,7 +34,8 @@ LEGAL_BOOKS = {
 }
 MAX_PULLS_PER_DAY = 8
 MIN_HOURS_BETWEEN = 1.25          # never closer than this
-DAILY_CREDIT_CAP = 450            # about 13,500 a month on a full schedule; the plan has 20,000
+MAX_HOURS_BETWEEN = 5.0           # on big slates, save a pull for the afternoon injury news
+DAILY_CREDIT_CAP = 300            # at most ~9,000 a month; the 20,000-credit key is shared with the NHL and NFL projects
 LOOKAHEAD_HOURS = 15               # from ~8 AM ET this covers the whole evening slate
 RESERVE_CREDITS = 1500
 SOURCE = "odds_api"
@@ -104,7 +105,7 @@ def should_pull(state: dict, now: datetime, upcoming: list, et_day: str):
         last = max(_parse(p["at"]) for p in today)
         # spread the pulls that are left over the time until the first game starts
         hours_to_tip = (min(soon) - now).total_seconds() / 3600
-        gap = max(MIN_HOURS_BETWEEN, min(3.0, hours_to_tip / left))
+        gap = max(MIN_HOURS_BETWEEN, min(MAX_HOURS_BETWEEN, hours_to_tip / left))
         if now - last < timedelta(hours=gap):
             return False, f"last pull {((now - last).total_seconds() / 3600):.1f} hours ago; next in about " \
                           f"{max(0, gap - (now - last).total_seconds() / 3600) * 60:.0f} minutes"
