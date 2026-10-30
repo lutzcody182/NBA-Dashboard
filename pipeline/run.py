@@ -106,6 +106,12 @@ def main(argv=None) -> int:
                 result["plays_backfill"] = {"error": str(exc)}
                 db.mark_attempt(conn, f"plays_{PLAYS_FROM_YEAR}", False, str(exc))
         result["update"] = update_current_season(conn, provider, args.refresh_days)
+        # the odds you got for bets (overrides.json, written by the override workflow)
+        from .overrides import apply_file
+        try:
+            result["overrides"] = apply_file(conn)
+        except Exception as exc:
+            result["overrides"] = {"error": str(exc)}
         result["injuries"] = run_injuries(conn)
     if args.cmd in ("update", "setup"):
         from .diagnostics import probe
