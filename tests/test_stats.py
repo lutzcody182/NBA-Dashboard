@@ -115,7 +115,14 @@ def test_player_logs_rates_are_sane(sim):
 
 def test_export_writes_everything(sim, tmp_path):
     conn, _ = sim
-    export_all(conn, tmp_path)
+    res = export_all(conn, tmp_path)
+
+    def errors(x):
+        if isinstance(x, dict):
+            return [e for k, v in x.items() for e in (v if k == "errors" and isinstance(v, list) else errors(v))]
+        return [e for v in x for e in errors(v)] if isinstance(x, list) else []
+    # parts that fail are caught and logged so the site still updates; none should fail here
+    assert not [e for e in errors(res) if "analytics" in str(e)]
     meta = json.loads((tmp_path / "meta.json").read_text())
     assert meta["season"] == "2025-26"
     assert len(meta["teams"]) == 30
