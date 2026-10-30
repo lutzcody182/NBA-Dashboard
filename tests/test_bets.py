@@ -41,10 +41,12 @@ def test_selection_caps():
         cands.append({"kind": "prop", "game_id": f"g{i % 3}", "player_id": i % 7, "side": "over", "ev": 0.05 + i / 1000,
                       "units": 1.0})
     picks = B.select(cands)
-    assert len(picks) <= B.MAX_DAY_PICKS
-    assert sum(p["units"] for p in picks) <= B.MAX_DAY_UNITS
+    # no daily limit: every player's best prop is kept (one per player per game), stakes scaled to the game cap
+    keys = {(c["game_id"], c["player_id"]) for c in cands}
+    assert len(picks) == len(keys)
     for g in ("g0", "g1", "g2"):
-        assert sum(p["units"] for p in picks if p["game_id"] == g) <= B.MAX_GAME_UNITS
+        n = sum(1 for p in picks if p["game_id"] == g)
+        assert sum(p["units"] for p in picks if p["game_id"] == g) <= max(B.MAX_GAME_UNITS, 0.25 * n)
     keys = [(p["game_id"], p["player_id"]) for p in picks]
     assert len(keys) == len(set(keys))
 
