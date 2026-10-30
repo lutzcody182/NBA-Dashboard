@@ -70,7 +70,12 @@ def main(argv=None) -> int:
     bf = sub.add_parser("backfill", help="load a past regular season from NBA box scores")
     bf.add_argument("start_year", type=int, help="e.g. 2025 for the 2025-26 season")
     sub.add_parser("export", help="rebuild the JSON from the database only")
+    sub.add_parser("notify-test", help="send a test phone notification (needs NTFY_TOPIC)")
     args = parser.parse_args(argv)
+    if args.cmd == "notify-test":
+        from .notify import send_test
+        print(json.dumps(send_test(), indent=2))
+        return 0
 
     conn = db.connect()
     provider = pick_provider(conn, logging.info) if args.cmd in ("update", "setup") else NbaCdnProvider()
@@ -113,6 +118,12 @@ def main(argv=None) -> int:
         bf_result["missing"] = bf_result["missing"][:20]
         result["backfill"] = bf_result
     result["export"] = export_all(conn)
+    if args.cmd == "update":
+        from .notify import notify_new_bets
+        try:
+            result["notify"] = notify_new_bets(conn)
+        except Exception as exc:          # a notification problem must never stop the site updating
+            result["notify"] = {"status": "error", "error": str(exc)}
     conn.close()
     print(json.dumps(result, indent=2, default=str))
 
