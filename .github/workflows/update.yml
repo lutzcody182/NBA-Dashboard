@@ -9,7 +9,7 @@ on:
   schedule:
     # Times are UTC. Eastern is UTC-4 until early November, then UTC-5.
     - cron: "17 9 * * *"           # ~5 AM ET: final box scores from last night
-    - cron: "41 12 * * *"          # ~8:40 AM ET: morning refresh
+    - cron: "4,34 12-14 * * *"     # ~8 AM to 10:35 AM ET, every 30 minutes (first odds and picks of the day)
     - cron: "4,19,34,49 15-23 * * *"  # ~11 AM to 7:50 PM ET, every 15 minutes (odds, injury news, picks)
     - cron: "4,19,34,49 0-2 * * *"    # ~8 PM to 10:50 PM ET, every 15 minutes (late games)
     - cron: "13,43 3-5 * * *"         # ~11 PM to 1:45 AM ET, every 30 minutes (final scores)
