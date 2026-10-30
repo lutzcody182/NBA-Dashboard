@@ -399,6 +399,13 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
         dbmod.mark_attempt(conn, "simulations", False, f"{exc}; {traceback.format_exc(limit=1)}")
     save_pregame_snapshot(conn, proj, sims)
     try:
+        from .scorecard import build as build_scorecard
+        _write(out_dir / "scorecard.json", build_scorecard(conn, season))
+        out["files"].append("scorecard.json")
+    except Exception as exc:
+        log.exception("Scorecard failed")
+        out["errors"].append(f"scorecard: {exc}")
+    try:
         from . import props as props_export
         res = props_export.export(conn, out_dir, season, games, proj, sims, _write)
         prop_rows, pulled = res.pop("_rows", []), res.pop("_pulled", {})
