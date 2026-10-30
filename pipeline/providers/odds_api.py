@@ -14,6 +14,7 @@ import os
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -38,6 +39,8 @@ MAX_HOURS_BETWEEN = 5.0           # on big slates, save a pull for the afternoon
 DAILY_CREDIT_CAP = 300            # at most ~9,000 a month; the 20,000-credit key is shared with the NHL and NFL projects
 LOOKAHEAD_HOURS = 15               # from ~8 AM ET this covers the whole evening slate
 RESERVE_CREDITS = 1500
+EARLIEST_ET_HOUR = 8               # no pulls before 8 AM Eastern: overnight lines are thin and it wastes a pull
+ET = ZoneInfo("America/New_York")
 SOURCE = "odds_api"
 
 
@@ -90,6 +93,8 @@ def should_pull(state: dict, now: datetime, upcoming: list, et_day: str):
     """(yes/no, reason). `upcoming`: tip times (UTC datetimes) of games not yet started."""
     if not upcoming:
         return False, "no games in the next hours"
+    if now.astimezone(ET).hour < EARLIEST_ET_HOUR:
+        return False, f"odds are pulled from {EARLIEST_ET_HOUR} AM Eastern"
     soon = [t for t in upcoming if now < t <= now + timedelta(hours=LOOKAHEAD_HOURS)]
     if not soon:
         return False, "no games in the next hours"
