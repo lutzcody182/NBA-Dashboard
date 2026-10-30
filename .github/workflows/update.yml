@@ -22,6 +22,7 @@ on:
         options:
           - update
           - setup-history
+          - test-notification
 
 permissions:
   contents: write     # read and replace the database file on the release
@@ -34,6 +35,7 @@ concurrency:
 
 jobs:
   update:
+    if: github.event_name != 'workflow_dispatch' || inputs.job != 'test-notification'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment:
@@ -71,6 +73,7 @@ jobs:
         run: python -m pipeline.run update
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
       - name: Save the database
         if: always()
@@ -96,3 +99,19 @@ jobs:
           path: _site
       - id: deploy
         uses: actions/deploy-pages@v5
+
+  # Sends one test notification to your phone; touches nothing else.
+  test-notification:
+    if: github.event_name == 'workflow_dispatch' && inputs.job == 'test-notification'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install requests
+      - name: Send a test notification
+        run: python -c "from pipeline.notify import send_test; print(send_test())"
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
