@@ -21,9 +21,10 @@ How much to trust the model
 Stakes
   A quarter of the Kelly stake for the blended chance, where 1 unit = 1% of
   bankroll, rounded to 0.25 units, at most MAX_UNITS per bet and
-  MAX_GAME_UNITS per game. One prop per player, and one side bet (moneyline
-  or spread) per game. At most MAX_DAY_PICKS bets and MAX_DAY_UNITS units a
-  day, best expected return first.
+  MAX_GAME_UNITS per game (a game's stakes are scaled down to fit, never
+  below 0.25 units, and no qualifying bet is dropped). One prop per player,
+  and one side bet (moneyline or spread) per game. No daily limit: every bet
+  that qualifies is recommended.
 Ledger
   A pick is locked the first time it qualifies on prices at most
   FRESH_MINUTES old (any site update, not only right after a pull), at that
@@ -58,8 +59,8 @@ KELLY = 0.25
 UNIT_PCT = 1.0
 MAX_UNITS = 1.5
 MAX_GAME_UNITS = 3.0
-MAX_DAY_PICKS = 15
-MAX_DAY_UNITS = 12.0
+MAX_DAY_PICKS = None      # no daily limit on bets (was 15)
+MAX_DAY_UNITS = None      # no daily limit on units (was 12)
 FRESH_MINUTES = 100       # picks are locked only from prices at most this old
 MIN_PRICE, MAX_PRICE = -250, 250
 
@@ -275,15 +276,13 @@ def select(cands: list) -> list:
             f = MAX_GAME_UNITS / tot
             for c in cs:
                 c["units"] = max(0.25, math.floor(c["units"] * f * 4) / 4)
-            # still over after rounding up the small ones: drop the weakest
-            cs.sort(key=lambda c: -c["ev"])
-            while sum(c["units"] for c in cs) > MAX_GAME_UNITS and len(cs) > 1:
-                cs.pop()
+            # every qualifying bet stays; if the 0.25 minimum keeps the game a little over, so be it
         out += cs
     out.sort(key=lambda c: -c["ev"])
     keep, units = [], 0.0
     for c in out:
-        if len(keep) >= MAX_DAY_PICKS or units + c["units"] > MAX_DAY_UNITS:
+        if (MAX_DAY_PICKS is not None and len(keep) >= MAX_DAY_PICKS) or \
+                (MAX_DAY_UNITS is not None and units + c["units"] > MAX_DAY_UNITS):
             continue
         keep.append(c)
         units += c["units"]
@@ -304,7 +303,8 @@ def lock(conn, picks: list, games: dict, now_iso: str) -> int:
         n_day, u_day = conn.execute(
             """SELECT COUNT(*), COALESCE(SUM(units), 0) FROM bets b JOIN games x ON x.game_id = b.game_id
                WHERE x.game_date = ?""", (g["game_date"],)).fetchone()
-        if n_day >= MAX_DAY_PICKS or u_day + c["units"] > MAX_DAY_UNITS:
+        if (MAX_DAY_PICKS is not None and n_day >= MAX_DAY_PICKS) or \
+                (MAX_DAY_UNITS is not None and u_day + c["units"] > MAX_DAY_UNITS):
             continue
         if c["kind"] == "prop":
             exists = conn.execute("SELECT 1 FROM bets WHERE game_id=? AND kind='prop' AND player_id=? AND stat=?",
