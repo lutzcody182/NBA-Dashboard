@@ -18,7 +18,7 @@ KEEP = ["gameId", "actionNumber", "orderNumber", "clock", "period", "actionType"
         "personId", "teamId", "teamTricode", "possession", "scoreHome", "scoreAway", "shotResult",
         "area", "descriptor", "description", "assistPersonId", "stealPersonId", "blockPersonId",
         "foulDrawnPersonId", "jumpBallWonPersonId", "jumpBallLostPersonId", "jumpBallRecoverdPersonId",
-        "playerName", "playerNameI", "timeActual", "qualifiers"]
+        "playerName", "playerNameI", "timeActual", "qualifiers", "xLegacy", "yLegacy", "shotDistance"]
 
 
 def download_season(start_year: int, session=None) -> pd.DataFrame:
