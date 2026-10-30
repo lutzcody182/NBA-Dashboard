@@ -381,7 +381,7 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
             out["errors"].append(f"shot maps: {exc}")
         try:
             from .analytics import write_files as write_analytics
-            out["files"] += write_analytics(conn, out_dir, season, _write, generated[:10])
+            out["files"] += write_analytics(conn, out_dir, season, _write, utc_now_iso()[:10])
         except Exception as exc:
             log.exception("Analytics failed")
             out["errors"].append(f"analytics: {exc}")
