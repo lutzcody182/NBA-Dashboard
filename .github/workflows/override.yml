@@ -1,0 +1,62 @@
+name: Record bet override
+
+# The Bets page opens a GitHub issue titled "Bet override #<bet>" with the odds, line and book
+# you actually got. This saves it to overrides.json (the permanent record), replies on the
+# issue, closes it, and starts a site update. Every update applies overrides.json, so an
+# override is never lost even if that update is skipped. Only your own issues are read.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write     # commit overrides.json
+  issues: write       # reply and close
+  actions: write      # start the site update
+
+concurrency:
+  group: bet-overrides
+  cancel-in-progress: false
+
+jobs:
+  record:
+    if: github.event.issue.user.login == github.repository_owner && startsWith(github.event.issue.title, 'Bet override')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Check the override and save it
+        id: rec
+        run: python -m pipeline.overrides
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+
+      - name: Commit overrides.json
+        if: steps.rec.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add overrides.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Bet override from issue #$NUMBER"
+            for i in 1 2 3; do git pull --rebase -q && git push -q && break; sleep 5; done
+          fi
+        env:
+          NUMBER: ${{ github.event.issue.number }}
+
+      - name: Start a site update
+        if: steps.rec.outcome == 'success'
+        run: gh workflow run update.yml --ref main -f job=update
+
+      - name: Reply and close
+        if: always()
+        run: |
+          if [ -f override_result.txt ]; then msg="$(cat override_result.txt)"; else msg="Something went wrong before the override was checked. Nothing was changed; open the form again to retry."; fi
+          gh issue close "$NUMBER" --repo "$GITHUB_REPOSITORY" --comment "$msg"
+        env:
+          NUMBER: ${{ github.event.issue.number }}
