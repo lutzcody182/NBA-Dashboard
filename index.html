@@ -366,6 +366,21 @@ dialog.box::backdrop { background: rgba(5, 10, 16, 0.72); }
 .bt-row .units { font: 700 18px var(--cond); color: var(--accent); }
 .bt-row .price { font-family: var(--cond); font-size: 15px; }
 .bt-row .why { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.ov-btn { background: none; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; padding: 1px 7px; cursor: pointer; white-space: nowrap; }
+.ov-btn:hover, .ov-btn:focus-visible { color: var(--text); border-color: var(--accent); }
+.ov-mine { color: var(--accent); font-weight: 600; } .ov-pend { color: var(--muted); font-style: italic; font-size: 12px; }
+dialog.ovd { width: min(460px, calc(100vw - 32px)); }
+#ov-form { display: grid; gap: 12px; padding: 14px 16px 16px; }
+#ov-form label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+#ov-form input, #ov-form select { font: 16px var(--body); padding: 7px 9px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+#ov-form .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+#ov-form .acts { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+#ov-form button { font: 600 14px var(--body); padding: 8px 14px; border-radius: var(--radius-sm); cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+#ov-form button.primary { background: var(--accent); border-color: var(--accent); color: #111; }
+#ov-form .err { color: var(--bad); font-size: 13px; min-height: 1em; }
+#ov-form > *, #ov-form .row > * { min-width: 0; }
+#ov-form input, #ov-form select { width: 100%; box-sizing: border-box; }
+#ov-form [hidden] { display: none; }
 .res-won { color: var(--good); } .res-lost { color: var(--bad); } .res-push, .res-void, .res-open { color: var(--muted); }
 .bt-warn { border-left: 3px solid var(--accent); padding: 8px 12px; background: var(--panel); color: var(--muted); font-size: 13px; margin: 0 0 16px; max-width: 90ch; }
 /* Props */
@@ -432,6 +447,10 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
   <div class="box-head"><h2 id="pc-title">Player</h2><span class="st" id="pc-sub"></span><button type="button" id="pc-close" aria-label="Close player page">×</button></div>
   <div class="box-body" id="pc-body"></div>
 </dialog>
+<dialog class="box ovd" id="ov-dialog" aria-labelledby="ov-title">
+  <div class="box-head"><h2 id="ov-title">Odds you got</h2><button type="button" id="ov-close" aria-label="Close">×</button></div>
+  <form class="box-body" id="ov-form" method="dialog"></form>
+</dialog>
 <dialog class="box" id="box-dialog" aria-labelledby="box-title">
   <div class="box-head"><h2 id="box-title">Box score</h2><span class="st" id="box-status"></span><button type="button" id="box-close" aria-label="Close box score">×</button></div>
   <div class="box-body" id="box-body"></div>
@@ -468,7 +487,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     <div class="bt-games" id="bt-games"></div>
     <h3 class="sec">Every recommended bet</h3>
     <div class="controls">
-      <label class="ctl">Type<select id="bt-kind"><option value="">All</option><option value="prop">Player props</option><option value="moneyline">Moneyline</option><option value="spread">Spread</option><option value="total">Total</option></select></label>
+      <label class="ctl">Type<select id="bt-kind"><option value="">All</option><option value="prop">All player props</option><option value="pts">Points</option><option value="reb">Rebounds</option><option value="ast">Assists</option><option value="fg3m">Threes</option><option value="pra">Pts+Reb+Ast</option><option value="pr">Pts+Reb</option><option value="pa">Pts+Ast</option><option value="ra">Reb+Ast</option><option value="moneyline">Moneyline</option><option value="spread">Spread</option><option value="total">Total</option></select></label>
       <label class="ctl">Result<select id="bt-status"><option value="">All</option><option value="open">Open</option><option value="won">Won</option><option value="lost">Lost</option><option value="push">Push</option><option value="void">Void</option></select></label>
     </div>
     <div class="table-wrap"><table id="bt-table"></table></div>
@@ -1849,6 +1868,77 @@ function betLabel(b) {
   return b.kind === "moneyline" ? `${abbr(team)} moneyline` : `${abbr(team)} ${b.line > 0 ? "+" : ""}${fmt(b.line)}`;
 }
 const betResultCell = (b) => `<span class="res-${b.status}">${b.status === "open" ? "Open" : b.status === "live" ? "Not locked" : b.status[0].toUpperCase() + b.status.slice(1)}</span>`;
+
+// ---------- the odds you got (bet overrides) ----------
+const REPO = "lutzcody182/NBA-Dashboard";
+const MARKET_LABEL = { pts: "Points", reb: "Rebounds", ast: "Assists", fg3m: "Threes", pra: "Pts+Reb+Ast", pr: "Pts+Reb", pa: "Pts+Ast", ra: "Reb+Ast", moneyline: "Moneyline", spread: "Spread", total: "Total" };
+const OV_BOOKS = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN BET", "BetRivers", "Fanatics", "Hard Rock", "bet365", "Bally Bet", "betPARX", "Other"];
+function ovPending() { try { return JSON.parse(localStorage.getItem("ovPending") || "{}"); } catch (_) { return {}; } }
+function ovSavePending(p) { try { localStorage.setItem("ovPending", JSON.stringify(p)); } catch (_) {} }
+// confirmed overrides come back on the ledger; drop pending ones the ledger now shows (or after 2 days)
+function ovReconcile(led) {
+  const p = ovPending(), byId = new Map(led.map((b) => [b.bet_id, b]));
+  for (const [id, o] of Object.entries(p)) {
+    const b = byId.get(+id);
+    const done = b && (o.clear ? b.taken_price == null : b.taken_price === o.price && b.taken_book === o.book);
+    if (done || Date.now() - o.t > 2 * 864e5) delete p[id];
+  }
+  ovSavePending(p); return p;
+}
+function priceCell(b, pend) {
+  const p = pend?.[b.bet_id];
+  if (p && !p.clear) return `<span class="ov-mine">${odds(p.price)}</span> <small style="color:var(--muted)">${esc(p.book)}${p.line != null && p.line !== b.line ? `, line ${fmt(p.line)}` : ""}</small> <span class="ov-pend">saving…</span>`;
+  if (b.taken_price != null && !(p && p.clear)) return `<span class="ov-mine" title="The odds you got">${odds(b.taken_price)}</span> <small style="color:var(--muted)">${esc(b.taken_book)}${b.taken_line != null && b.taken_line !== b.line ? `, line ${fmt(b.taken_line)}` : ""} · rec ${odds(b.price)} ${esc(bookName(b.book))}</small>`;
+  return `${odds(b.price)} <small style="color:var(--muted)">${esc(bookName(b.book))}</small>${p?.clear ? ` <span class="ov-pend">saving…</span>` : ""}`;
+}
+const ovButton = (b) => b.bet_id ? `<button type="button" class="ov-btn" data-ov="${b.bet_id}" title="Record the odds, line and book you actually got">${b.taken_price != null ? "Edit your odds" : "Got different odds?"}</button>` : "";
+function openOverride(id) {
+  const b = fromCols(S.bets.ledger).find((x) => x.bet_id === id); if (!b) return;
+  const cur = { price: b.taken_price ?? b.price, line: b.taken_line ?? b.line, book: b.taken_book ?? bookName(b.book) };
+  const known = OV_BOOKS.includes(cur.book);
+  const showLine = b.kind !== "moneyline";
+  $("#ov-title").textContent = "Odds you got";
+  $("#ov-form").innerHTML = `<p class="pr-note" style="margin:0"><strong>${betLabel(b).replace(/<[^>]+>/g, "")}</strong><br>Recommended ${odds(b.price)} at ${esc(bookName(b.book))}${showLine ? `, line ${fmt(b.line)}` : ""}. Results and units will be graded at what you enter; the recommendation stays on record.</p>
+    <div class="row"><label>Odds (American)<input id="ov-price" inputmode="text" autocomplete="off" value="${cur.price > 0 ? "+" : ""}${cur.price}" required></label>
+    ${showLine ? `<label>Line<input id="ov-line" inputmode="decimal" autocomplete="off" value="${cur.line ?? ""}"></label>` : "<span></span>"}</div>
+    <label>Book<select id="ov-book">${OV_BOOKS.map((x) => `<option${(known ? x === cur.book : x === "Other") ? " selected" : ""}>${x}</option>`).join("")}</select></label>
+    <label id="ov-other-wrap" ${known ? "hidden" : ""}>Book name<input id="ov-other" maxlength="30" value="${known ? "" : esc(cur.book)}"></label>
+    <div class="err" id="ov-err"></div>
+    <p class="pr-note" style="margin:0">Saving opens a short form on GitHub, already filled in. Tap <strong>Submit</strong> there and the bet updates within a few minutes. Only your GitHub account can change bets.</p>
+    <div class="acts">${b.taken_price != null ? `<button type="button" id="ov-clear">Back to recommended</button>` : ""}<button type="button" id="ov-cancel">Cancel</button><button type="submit" class="primary">Save</button></div>`;
+  const dlg = $("#ov-dialog"); dlg.showModal();
+  $("#ov-book").addEventListener("input", (e) => { $("#ov-other-wrap").hidden = e.target.value !== "Other"; });
+  $("#ov-cancel").addEventListener("click", () => dlg.close());
+  const submit = (o) => {
+    const machine = JSON.stringify({ bet_id: b.bet_id, ...o });
+    const human = o.clear ? `Go back to the recommended odds for bet #${b.bet_id}.` :
+      `I got ${odds(o.price)} at ${o.book}${o.line != null ? `, line ${o.line}` : ""} for bet #${b.bet_id}: ${betLabel(b).replace(/<[^>]+>/g, "")} (recommended ${odds(b.price)} at ${bookName(b.book)}).`;
+    const url = `https://github.com/${REPO}/issues/new?title=${encodeURIComponent(`Bet override #${b.bet_id}`)}&body=${encodeURIComponent(`${human}\n\nDo not edit the line below.\n\noverride: ${machine}\n`)}`;
+    const p = ovPending(); p[b.bet_id] = { ...o, t: Date.now() }; ovSavePending(p);
+    window.open(url, "_blank", "noopener");
+    dlg.close(); renderBets();
+  };
+  $("#ov-clear")?.addEventListener("click", () => submit({ clear: true }));
+  $("#ov-form").onsubmit = (e) => {
+    e.preventDefault();
+    const raw = $("#ov-price").value.trim().replace(/^\+/, "");
+    const price = Number(raw);
+    const err = (m) => { $("#ov-err").textContent = m; };
+    if (!/^-?\d+$/.test(raw) || Math.abs(price) < 100) return err("Odds must be American odds like -115 or +130.");
+    let line = null;
+    if (showLine) {
+      const lr = $("#ov-line").value.trim();
+      if (lr !== "") { line = Number(lr); if (!Number.isFinite(line) || Math.abs(line * 2 - Math.round(line * 2)) > 1e-9) return err("Line must be a whole or half number, like 26.5."); }
+    }
+    let book = $("#ov-book").value;
+    if (book === "Other") { book = $("#ov-other").value.trim(); if (!/^[A-Za-z0-9][A-Za-z0-9 .'&+-]{0,29}$/.test(book)) return err("Enter the book's name (letters, numbers and spaces)."); }
+    submit({ price, line, book });
+  };
+}
+function initOverrides() {
+  $("#ov-close").addEventListener("click", () => $("#ov-dialog").close());
+  document.addEventListener("click", (e) => { const t = e.target.closest?.("[data-ov]"); if (t) { e.preventDefault(); openOverride(+t.dataset.ov); } });
+}
 function renderBets() {
   const d = S.bets;
   if (!d) { $("#bt-games").innerHTML = `<div class="empty">Bets have not been published yet.</div>`; return; }
@@ -1856,6 +1946,7 @@ function renderBets() {
   $("#bt-warn").innerHTML = `The model has no live track record yet, so every pick uses a chance halfway between the model's and the market's, and stakes are a quarter of the Kelly amount. Treat this as a test of the model, not proven advice: the ledger below and the "beat the closing line" rate are how you'll know whether it has an edge. Bet only what you can afford to lose. If gambling stops being fun, call or text 1-800-GAMBLER.`;
   const card = (k, v, s, cls = "") => `<div class="bt-card"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s}</div></div>`;
   const led = fromCols(d.ledger);
+  const pend = ovReconcile(led);
   const open = led.filter((b) => b.status === "open");
   $("#bt-cards").innerHTML = [
     card("Record", sm.graded ? `${sm.won}-${sm.lost}${sm.push ? "-" + sm.push : ""}` : "—", `${sm.graded ?? 0} graded of ${sm.bets ?? 0}`),
@@ -1881,22 +1972,25 @@ function renderBets() {
   $("#bt-games").innerHTML = games.length ? games.map(([gid, bs]) => {
     const g = bs[0], tot = bs.reduce((a, b) => a + b.units, 0);
     const rows = bs.sort((a, b) => b.ev - a.ev).map((b) => `<div class="bt-row"><span class="what">${betLabel(b)}</span>
-      <span class="price">${odds(b.price)} <small style="color:var(--muted)">${esc(bookName(b.book))}</small></span><span class="units">${fmt(b.units, 2)}u</span>
-      ${liveBetLine(b)}<span class="why">Model ${pct(b.p_model)}%, market ${pct(b.p_market)}%, used ${pct(b.p_used)}%; expected return ${signed(100 * b.ev, 1)}% · ${b.status === "live" ? `<span style="color:var(--accent)">Qualifies now, not locked yet</span> (prices from ${fmtStamp(b.created_at)}; it locks when fresh prices still show it)` : `${betResultCell(b)} · locked ${fmtStamp(b.created_at)}`}</span></div>`).join("");
+      <span class="price">${priceCell(b, pend)}</span><span class="units">${fmt(b.units, 2)}u</span>
+      ${liveBetLine(b)}<span class="why">Model ${pct(b.p_model)}%, market ${pct(b.p_market)}%, used ${pct(b.p_used)}%; expected return ${signed(100 * b.ev, 1)}% · ${b.status === "live" ? `<span style="color:var(--accent)">Qualifies now, not locked yet</span> (prices from ${fmtStamp(b.created_at)}; it locks when fresh prices still show it)` : `${betResultCell(b)} · locked ${fmtStamp(b.created_at)} ${ovButton(b)}`}</span></div>`).join("");
     return `<div class="bt-game"><h3><span>${abbr(g.away_team_id)} @ ${abbr(g.home_team_id)}</span><small>${fmtTime(g.tip_utc)} · ${fmt(tot, 2)} units</small></h3>${rows}</div>`;
   }).join("") : `<div class="empty">No picks qualify at the latest prices${d.odds_as_of ? ` (${fmtStamp(d.odds_as_of)})` : ""}. Odds are pulled about every 75 to 90 minutes on game days, starting late morning.</div>`;
   // ledger
   const kind = $("#bt-kind").value, status = $("#bt-status").value;
-  const rows = led.filter((b) => (!kind || b.kind === kind) && (!status || b.status === status));
-  const head = `<thead><tr><th class="l">Date</th><th class="l">Bet</th><th class="l">Type</th><th>Price</th><th class="l">Book</th><th>Units</th><th>Model</th><th>Market</th><th>Exp. return</th><th class="l">Result</th><th>Actual</th><th>P/L</th><th title="Market's fair chance for this side at the last pull before tip-off, minus when the bet was made">Closing line</th></tr></thead>`;
-  const body = rows.map((b) => `<tr><td class="l">${fmtDay(b.game_date)}</td><td class="l">${betLabel(b)}</td><td class="l">${esc({ prop: "Prop", moneyline: "Moneyline", spread: "Spread", total: "Total" }[b.kind])}</td>
-    <td>${odds(b.price)}</td><td class="l">${esc(bookName(b.book))}</td><td>${fmt(b.units, 2)}</td><td>${pct(b.p_model)}%</td><td>${pct(b.p_market)}%</td><td>${signed(100 * b.ev, 1)}%</td>
+  const mkt = (b) => b.kind === "prop" ? b.stat : b.kind;
+  const rows = led.filter((b) => (!kind || b.kind === kind || mkt(b) === kind) && (!status || b.status === status));
+  const head = `<thead><tr><th class="l">Date</th><th class="l">Bet</th><th class="l">Type</th><th class="l" title="Your odds when you recorded different ones; otherwise the recommended odds and book">Odds and book</th><th>Units</th><th>Model</th><th>Market</th><th>Exp. return</th><th class="l">Result</th><th>Actual</th><th>P/L</th><th title="Market's fair chance for this side at the last pull before tip-off, minus when the bet was made">Closing line</th></tr></thead>`;
+  const body = rows.map((b) => `<tr><td class="l">${fmtDay(b.game_date)}</td><td class="l">${betLabel(b)}</td><td class="l">${esc(MARKET_LABEL[mkt(b)] ?? b.kind)}</td>
+    <td class="l">${priceCell(b, pend)}<br>${ovButton(b)}</td><td>${fmt(b.units, 2)}</td><td>${pct(b.p_model)}%</td><td>${pct(b.p_market)}%</td><td>${signed(100 * b.ev, 1)}%</td>
     <td class="l">${betResultCell(b)}</td><td>${b.result == null ? "—" : b.kind === "total" || b.kind === "prop" ? fmt(b.result, 0) : signed(b.result, 0)}</td>
     <td class="${b.pnl > 0 ? "res-won" : b.pnl < 0 ? "res-lost" : ""}">${b.pnl == null ? "—" : signed(b.pnl, 2)}</td><td>${b.clv == null ? "—" : signed(100 * b.clv, 1)}</td></tr>`).join("");
-  $("#bt-table").innerHTML = head + `<tbody>${body || `<tr><td class="empty" colspan="13">No bets yet.</td></tr>`}</tbody>`;
-  $("#bt-count").textContent = `${rows.length} bets. Result for spreads and moneylines is the home team's final margin.`;
-  const kinds = Object.entries(d.by_kind ?? {});
-  $("#bt-kinds").innerHTML = kinds.length ? `<table><thead><tr><th class="l">Type</th><th>Bets</th><th>Record</th><th>Units</th><th>Return</th><th>Beat close</th></tr></thead><tbody>${kinds.map(([k, v]) => `<tr><td class="l">${esc({ prop: "Player props", moneyline: "Moneyline", spread: "Spread", total: "Total" }[k] ?? k)}</td><td>${v.bets}</td><td>${v.graded ? `${v.won}-${v.lost}${v.push ? "-" + v.push : ""}` : "—"}</td><td>${v.graded ? signed(v.units, 2) : "—"}</td><td>${v.roi != null ? signed(100 * v.roi, 1) + "%" : "—"}</td><td>${v.beat_close != null ? pct(v.beat_close, 0) + "%" : "—"}</td></tr>`).join("")}</tbody></table>
+  $("#bt-table").innerHTML = head + `<tbody>${body || `<tr><td class="empty" colspan="12">No bets yet.</td></tr>`}</tbody>`;
+  $("#bt-count").textContent = `${rows.length} bets. Result for spreads and moneylines is the home team's final margin. Where you recorded different odds, the result and P/L use your odds and line; the closing-line column always grades the recommended pick.`;
+  const kinds = [...Object.entries(d.by_market ?? {}).map(([k, v]) => [MARKET_LABEL[k] ?? k, v, false]),
+    ...(d.by_kind?.prop ? [["All player props", d.by_kind.prop, true]] : [])];
+  const typeRow = ([label, v, bold]) => `<tr${bold ? ' style="font-weight:600"' : ""}><td class="l">${esc(label)}</td><td>${v.bets}</td><td>${v.graded ? `${v.won}-${v.lost}${v.push ? "-" + v.push : ""}` : "—"}</td><td>${v.graded ? fmt(v.units_risked, 2) : "—"}</td><td class="${v.units > 0 ? "res-won" : v.units < 0 ? "res-lost" : ""}">${v.graded ? signed(v.units, 2) : "—"}</td><td>${v.roi != null ? signed(100 * v.roi, 1) + "%" : "—"}</td><td>${v.avg_clv != null ? signed(100 * v.avg_clv, 1) : "—"}</td><td>${v.beat_close != null ? pct(v.beat_close, 0) + "%" : "—"}</td></tr>`;
+  $("#bt-kinds").innerHTML = kinds.length ? `<div class="table-wrap"><table><thead><tr><th class="l">Type</th><th>Bets</th><th>Record</th><th>Risked</th><th>Units</th><th>Return</th><th title="Average closing-line value, in points of chance">CLV</th><th>Beat close</th></tr></thead><tbody>${kinds.map(typeRow).join("")}</tbody></table></div>
     <p class="pr-note">A few dozen bets says almost nothing about skill; even a few hundred leaves a wide range. Beating the closing line (the market moving toward the pick after it was made) shows up much sooner than profit does.</p>` : `<p class="pr-note">Nothing on the ledger yet.</p>`;
   $("#bt-rules").innerHTML = `<p class="pr-note"><strong>Books:</strong> state-licensed US sportsbooks only (${esc(st.legal_books.filter((b) => BOOK_NAME[b]).map(bookName).filter((v, i, a) => a.indexOf(v) === i).join(", "))}, and others where licensed). Offshore books in the feed are ignored. Check which of these operate in your state.</p>
     <p class="pr-note"><strong>Chances:</strong> props use the props model; moneylines use the simulation's win chance; spreads and totals use a normal curve around the simulated margin and total, as wide as the simulation's misses on last season's replay. The chance used for a bet is ${Math.round(100 * st.blend)}% model and ${Math.round(100 * (1 - st.blend))}% market.</p>
@@ -3086,6 +3180,7 @@ async function init() {
   renderFreshness(); renderRail(); renderGames(); renderLeaders(); renderTeams(); renderPlayers();
   initLineups();
   initLab();
+  initOverrides();
   initZones();
   initPlayerLinks();
   startLive();
