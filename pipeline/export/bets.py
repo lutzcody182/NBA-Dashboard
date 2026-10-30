@@ -91,6 +91,26 @@ CREATE TABLE IF NOT EXISTS bets (
 CREATE INDEX IF NOT EXISTS idx_bets_game ON bets(game_id);
 """
 KIND_LABEL = {"prop": "Player prop", "moneyline": "Moneyline", "spread": "Spread", "total": "Total"}
+# results are also broken out by bet type: each prop stat, then the game markets
+MARKET_ORDER = ("pts", "reb", "ast", "fg3m", "pra", "pr", "pa", "ra", "moneyline", "spread", "total")
+
+# What you actually got, when it differs from the recommendation (set through an override,
+# pipeline/overrides.py). Results and units are graded at these; the recommended price, line and
+# book are kept as they were, and closing-line value still measures the recommended pick.
+TAKEN_COLUMNS = (("taken_price", "INTEGER"), ("taken_line", "REAL"), ("taken_book", "TEXT"), ("taken_at", "TEXT"))
+
+
+def ensure_table(conn) -> None:
+    conn.executescript(TABLE)
+    have = {r[1] for r in conn.execute("PRAGMA table_info(bets)")}
+    for col, decl in TAKEN_COLUMNS:
+        if col not in have:
+            conn.execute(f"ALTER TABLE bets ADD COLUMN {col} {decl}")
+    conn.commit()
+
+
+def market_of(kind: str, stat) -> str:
+    return stat if kind == "prop" else kind
 
 
 # ---------------------------------------------------------------- game lines
@@ -343,7 +363,7 @@ def _closing_fair(conn, bet: dict, tip: str):
 
 def grade(conn, season: str) -> int:
     open_bets = [dict(r) for r in conn.execute(
-        """SELECT b.*, g.status AS gstatus, g.home_score, g.away_score, g.tip_utc FROM bets b
+        """SELECT b.*, b.line AS rec_line, g.status AS gstatus, g.home_score, g.away_score, g.tip_utc FROM bets b
            JOIN games g ON g.game_id = b.game_id WHERE b.status = 'open'""")]
     if not open_bets:
         return 0
@@ -363,6 +383,8 @@ def grade(conn, season: str) -> int:
         conn.execute("UPDATE bets SET status='void', pnl=0, graded_at=? WHERE bet_id=?", (now, b["bet_id"]))
         n += 1
     for b in finals:
+        if b.get("taken_line") is not None:
+            b["line"] = b["taken_line"]           # graded at the line you got
         if b["kind"] == "prop":
             key = (b["game_id"], b["player_id"])
             if key not in logs.index or float(logs.loc[key, "min"]) <= 0:
@@ -386,8 +408,10 @@ def grade(conn, season: str) -> int:
                 val = total
                 diff = total - b["line"] if b["side"] == "over" else b["line"] - total
         status = "won" if diff > 0 else "lost" if diff < 0 else "push"
-        pnl = b["units"] * (PM.decimal(b["price"]) - 1) if status == "won" else -b["units"] if status == "lost" else 0.0
-        close = _closing_fair(conn, b, b["tip_utc"] or now)
+        price = b["taken_price"] if b.get("taken_price") is not None else b["price"]
+        pnl = b["units"] * (PM.decimal(price) - 1) if status == "won" else -b["units"] if status == "lost" else 0.0
+        rec = dict(b, line=b["rec_line"])         # closing-line value grades the recommended pick
+        close = _closing_fair(conn, rec, b["tip_utc"] or now)
         clv = close - b["p_market"] if close is not None else None
         conn.execute("UPDATE bets SET status=?, result=?, pnl=?, close_fair=?, clv=?, graded_at=? WHERE bet_id=?",
                      (status, val, round(pnl, 4), close, clv, now, b["bet_id"]))
@@ -413,7 +437,7 @@ def summary(df: pd.DataFrame) -> dict:
 
 
 def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list, pulled: dict, write) -> dict:
-    conn.executescript(TABLE)
+    ensure_table(conn)
     from .props import _latest_odds
     gmap = {g["game_id"]: g for g in games}
     table = game_market_table(_latest_odds(conn, list(gmap), props=False))
@@ -436,9 +460,15 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
     ledger["player"] = ledger["player_id"].map(lambda p: names.get(int(p)) if pd.notna(p) else None)
     by_kind = {k: summary(ledger[ledger["kind"] == k]) for k in KIND_LABEL if (ledger["kind"] == k).any()} \
         if len(ledger) else {}
+    by_market = {}
+    if len(ledger):
+        mk = [market_of(k, s) for k, s in zip(ledger["kind"], ledger["stat"])]
+        ledger["market"] = mk
+        by_market = {m: summary(ledger[ledger["market"] == m]) for m in MARKET_ORDER if m in set(mk)}
     cols = ["bet_id", "created_at", "game_id", "game_date", "home_team_id", "away_team_id", "tip_utc", "kind",
             "player_id", "player", "stat", "side", "line", "price", "book", "p_model", "p_market", "p_used", "ev",
-            "units", "status", "result", "pnl", "close_fair", "clv", "home_score", "away_score"]
+            "units", "status", "result", "pnl", "close_fair", "clv", "home_score", "away_score",
+            "taken_price", "taken_line", "taken_book", "taken_at"]
     led = ledger[cols].astype(object).where(pd.notna(ledger[cols]), None) if len(ledger) else ledger
     game_lines = [{k: v for k, v in t.items() if k != "sides"} | {"sides": list(t["sides"])} for t in table]
     payload = {
@@ -453,6 +483,7 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
         "game_lines": game_lines,
         "ledger": {"cols": cols, "rows": led.values.tolist() if len(led) else []},
         "summary": summary(ledger) if len(ledger) else {"bets": 0, "graded": 0}, "by_kind": by_kind,
+        "by_market": by_market,
     }
     write(out_dir / "bets.json", payload)
     return {"picks": len(picks), "added": added, "graded": graded, "ledger": int(len(ledger))}
