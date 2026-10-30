@@ -138,3 +138,21 @@ def store_archive_game(conn, g: GamePbp, actions: list, source: str) -> None:
              p["fga"], p["fg3m"], p["fg3a"], p["ftm"], p["fta"], p["oreb"], p["dreb"], p["ast"], p["stl"],
              p["blk"], p["tov"], p["pf"], plus_minus.get(pid), source, now))
     store_pbp(conn, g, source)
+
+
+PLAY_COLS = ("game_id", "n", "period", "t", "team_id", "player_id", "kind", "value", "made", "x", "y", "dist",
+             "zone", "family", "other_id", "blocked", "poss_n", "poss_age", "poss_kind", "putback", "margin",
+             "stint_num", "reb_off", "reb_player", "tech")
+POSS_COLS = ("game_id", "n", "team_id", "period", "start_t", "end_t", "kind", "pts", "fga", "fta", "tov", "oreb",
+             "first_age", "stint_num", "margin")
+
+
+def store_plays(conn, game_id: str, plays: list, poss: list) -> None:
+    """Replace one game's play log and possessions (pipeline/pbp/plays.py)."""
+    conn.execute("DELETE FROM pbp_plays WHERE game_id = ?", (game_id,))
+    conn.execute("DELETE FROM pbp_poss WHERE game_id = ?", (game_id,))
+    conn.executemany(f"INSERT INTO pbp_plays ({', '.join(PLAY_COLS)}) VALUES ({', '.join('?' * len(PLAY_COLS))})",
+                     [tuple(p[c] for c in PLAY_COLS) for p in plays])
+    conn.executemany(f"INSERT INTO pbp_poss ({', '.join(POSS_COLS)}) VALUES ({', '.join('?' * len(POSS_COLS))})",
+                     [tuple(p[c] for c in POSS_COLS) for p in poss])
+
