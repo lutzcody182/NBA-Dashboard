@@ -9,7 +9,7 @@ from pathlib import Path
 from . import config
 from .util import utc_now_iso
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _STINT_STATS = (
     "fga", "fgm", "fg3a", "fg3m", "fta", "ftm", "oreb", "dreb", "tov", "pf", "ast", "stl", "blk",
@@ -109,6 +109,56 @@ MIGRATIONS[3] = """
     CREATE INDEX IF NOT EXISTS idx_shots_team ON shot_locations(team_id);
     CREATE INDEX IF NOT EXISTS idx_shots_def ON shot_locations(def_team_id);
     CREATE INDEX IF NOT EXISTS idx_shots_player ON shot_locations(player_id);
+"""
+
+MIGRATIONS[4] = """
+    -- Every shot, free throw, turnover and rebound with its context (from play-by-play).
+    CREATE TABLE IF NOT EXISTS pbp_plays (
+        game_id     TEXT NOT NULL,
+        n           INTEGER NOT NULL,     -- order in the game
+        period      INTEGER NOT NULL,
+        t           REAL NOT NULL,        -- elapsed game seconds
+        team_id     INTEGER NOT NULL,
+        player_id   INTEGER,              -- NULL for team rebounds
+        kind        TEXT NOT NULL,        -- fg, ft, tov, reb
+        value       INTEGER,              -- fg: 2 or 3
+        made        INTEGER,              -- fg/ft made; reb: 1 offensive, 0 defensive; tov: 1 if stolen
+        x           REAL,                 -- fg: feet left/right of the basket
+        y           REAL,                 -- fg: feet out from the basket
+        dist        REAL,                 -- fg: feet from the basket
+        zone        TEXT,                 -- fg: rim, paint, mid, c3, ab3
+        family      TEXT,                 -- fg: dunk, tip, layup, hook, floater, jumper, pullup, stepback, fadeaway
+        other_id    INTEGER,              -- fg: assisting player; tov: player who stole it
+        blocked     INTEGER,
+        poss_n      INTEGER,              -- possession number in pbp_poss
+        poss_age    REAL,                 -- seconds since the possession began
+        poss_kind   TEXT,                 -- how it began: dreb, steal, deadball, made, ft, period, unknown
+        putback     INTEGER,              -- fg within 3 seconds of an offensive rebound
+        margin      INTEGER,              -- shooting team's lead before the play
+        stint_num   INTEGER,              -- lineup stint (lineup_stints.stint_num)
+        reb_off     INTEGER,              -- missed fg/last ft: 1 offense got the rebound, 0 defense
+        reb_player  INTEGER,
+        tech        INTEGER DEFAULT 0,    -- technical free throw
+        PRIMARY KEY (game_id, n)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS pbp_poss (
+        game_id     TEXT NOT NULL,
+        n           INTEGER NOT NULL,
+        team_id     INTEGER NOT NULL,     -- offense
+        period      INTEGER NOT NULL,
+        start_t     REAL NOT NULL,
+        end_t       REAL NOT NULL,
+        kind        TEXT NOT NULL,        -- how it began (see pbp_plays.poss_kind)
+        pts         INTEGER NOT NULL,
+        fga         INTEGER NOT NULL,
+        fta         INTEGER NOT NULL,
+        tov         INTEGER NOT NULL,
+        oreb        INTEGER NOT NULL,
+        first_age   REAL,                 -- seconds until the first shot, free throw or turnover
+        stint_num   INTEGER,
+        margin      INTEGER,              -- offense's lead at the start
+        PRIMARY KEY (game_id, n)
+    ) WITHOUT ROWID;
 """
 
 # Columns added to existing tables (ALTER TABLE cannot run inside executescript safely
