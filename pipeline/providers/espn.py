@@ -615,7 +615,7 @@ def convert_plays(summary: dict, athletes: dict) -> list:
 class EspnProvider:
     name = "espn"
     minutes_from_pbp = True   # box minutes are whole numbers; exact seconds come from play-by-play
-    pbp_valid_since = "2026-10-29T01:00:00Z"   # games parsed earlier are re-read (now also saves shot locations)
+    pbp_valid_since = "2026-10-30T04:00:00Z"   # games parsed earlier are re-read (now also saves the play log)
 
     def __init__(self, conn, session: Optional[requests.Session] = None, retries: int = 3,
                  now: Optional[datetime] = None):
