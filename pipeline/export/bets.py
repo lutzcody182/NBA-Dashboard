@@ -50,6 +50,10 @@ from ..util import utc_now_iso
 
 log = logging.getLogger(__name__)
 
+# A bet "beat the close" only if the market moved toward it by more than rounding noise. Many bets are
+# locked from the last pull before tip-off, so their closing price is their own price (CLV exactly 0).
+BEAT_EPS = 5e-5
+
 BLEND = 0.5
 MIN_EV = 0.04
 MAX_GAP = 0.10
@@ -433,7 +437,7 @@ def summary(df: pd.DataFrame) -> dict:
             "units_risked": round(risked, 2), "units": round(pnl, 2), "roi": round(pnl / risked, 4) if risked else None,
             "roi_se": round(float(res.std(ddof=1) / math.sqrt(len(res))), 4) if len(res) > 1 else None,
             "avg_clv": round(float(clv.mean()), 4) if len(clv) else None,
-            "beat_close": round(float((clv > 0).mean()), 3) if len(clv) else None, "clv_n": int(len(clv))}
+            "beat_close": round(float((clv > BEAT_EPS).mean()), 3) if len(clv) else None, "clv_n": int(len(clv))}
 
 
 def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list, pulled: dict, write) -> dict:
