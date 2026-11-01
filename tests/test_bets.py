@@ -81,3 +81,11 @@ def test_grading_game_lines(tmp_path):
     assert res["spread"][0] == "won" and res["spread"][1] == pytest.approx(0.9091, abs=1e-3)
     assert res["total"] == ("push", 0.0)
     assert res["moneyline"] == ("lost", -1.0)
+
+
+def test_beat_close_ignores_rounding_noise():
+    # bets locked from the last pull before tip-off have CLV 0 (or float noise); they did not beat the close
+    df = pd.DataFrame({"status": ["won", "lost", "won"], "units": [1.0, 1.0, 1.0], "pnl": [0.9, -1.0, 0.9],
+                       "clv": [0.0, 1e-17, 0.02]})
+    s = B.summary(df)
+    assert s["beat_close"] == pytest.approx(1 / 3, abs=1e-3) and s["clv_n"] == 3
