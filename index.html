@@ -482,18 +482,24 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     <h2>Recommended bets</h2>
     <p class="sub">Bets where the model and the market disagree enough to pay at the best price at a state-licensed US sportsbook, sized in units (1 unit = 1% of your bankroll). The page rebuilds every 15 minutes on game days with the latest injury news, and odds are pulled about every 75 to 90 minutes from late morning until tip-off. Each pick is locked the first time it qualifies on fresh prices, at that price and book, and every pick is graded after the game. Lines move: check the price at your book before betting.</p>
     <div class="bt-warn" id="bt-warn"></div>
+    <div class="controls"><div class="seg" role="group" aria-label="Which bets" id="bt-size">
+      <button data-size="1u" aria-pressed="true">Bets of 1+ units</button><button data-size="all" aria-pressed="false">All bets</button>
+    </div><span class="count" id="bt-size-note"></span></div>
     <div class="bt-cards" id="bt-cards"></div>
     <h3 class="sec" id="bt-today-title">Today's picks</h3>
     <div class="bt-games" id="bt-games"></div>
+    <h3 class="sec">Results by period</h3>
+    <div class="table-wrap"><table id="bt-periods"></table></div>
     <h3 class="sec">Every recommended bet</h3>
     <div class="controls">
       <label class="ctl">Type<select id="bt-kind"><option value="">All</option><option value="prop">All player props</option><option value="pts">Points</option><option value="reb">Rebounds</option><option value="ast">Assists</option><option value="fg3m">Threes</option><option value="pra">Pts+Reb+Ast</option><option value="pr">Pts+Reb</option><option value="pa">Pts+Ast</option><option value="ra">Reb+Ast</option><option value="moneyline">Moneyline</option><option value="spread">Spread</option><option value="total">Total</option></select></label>
+      <label class="ctl">Period<select id="bt-period"><option value="season">Season</option><option value="yesterday">Yesterday</option><option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30">Last month</option></select></label>
       <label class="ctl">Result<select id="bt-status"><option value="">All</option><option value="open">Open</option><option value="won">Won</option><option value="lost">Lost</option><option value="push">Push</option><option value="void">Void</option></select></label>
     </div>
     <div class="table-wrap"><table id="bt-table"></table></div>
     <p class="count" id="bt-count"></p>
     <div class="pr-grid">
-      <div class="panel"><h3>Results by bet type</h3><div id="bt-kinds"></div></div>
+      <div class="panel"><h3 id="bt-kinds-title">Results by bet type</h3><div id="bt-kinds"></div></div>
       <div class="panel"><h3>How picks and stakes are chosen</h3><div id="bt-rules"></div></div>
     </div>
   </section>
@@ -1939,14 +1945,52 @@ function initOverrides() {
   $("#ov-close").addEventListener("click", () => $("#ov-dialog").close());
   document.addEventListener("click", (e) => { const t = e.target.closest?.("[data-ov]"); if (t) { e.preventDefault(); openOverride(+t.dataset.ov); } });
 }
+
+// ---------- bet tracker: which bets, and results by period ----------
+const BET_PERIODS = [["yesterday", "Yesterday"], ["7", "Last 7 days"], ["14", "Last 14 days"], ["30", "Last month"], ["season", "Season"]];
+const BV = (() => { try { return { size: localStorage.getItem("betSize") || "1u" }; } catch (_) { return { size: "1u" }; } })();
+// game dates are Eastern; "last N days" includes today
+function inPeriod(b, p) {
+  if (p === "season") return true;
+  if (p === "yesterday") return b.game_date === etDate(-1);
+  return b.game_date > etDate(-Number(p)) && b.game_date <= etDate(0);
+}
+function betSummary(rows) {
+  const done = rows.filter((b) => b.status === "won" || b.status === "lost" || b.status === "push");
+  const open = rows.filter((b) => b.status === "open");
+  const out = { bets: rows.length, graded: done.length, open: open.length, open_units: open.reduce((a, b) => a + b.units, 0) };
+  if (!done.length) return out;
+  const risked = done.reduce((a, b) => a + b.units, 0), units = done.reduce((a, b) => a + (b.pnl ?? 0), 0);
+  const per = done.map((b) => (b.pnl ?? 0) / b.units), mean = per.reduce((a, v) => a + v, 0) / per.length;
+  const sd = per.length > 1 ? Math.sqrt(per.reduce((a, v) => a + (v - mean) ** 2, 0) / (per.length - 1)) : null;
+  const clv = done.map((b) => b.clv).filter((v) => v != null);
+  return { ...out, won: done.filter((b) => b.status === "won").length, lost: done.filter((b) => b.status === "lost").length,
+    push: done.filter((b) => b.status === "push").length, units_risked: risked, units, roi: risked ? units / risked : null,
+    roi_se: sd != null ? sd / Math.sqrt(per.length) : null,
+    avg_clv: clv.length ? clv.reduce((a, v) => a + v, 0) / clv.length : null, beat_close: clv.length ? clv.filter((v) => v > 0).length / clv.length : null, clv_n: clv.length };
+}
+const recordText = (v) => v.graded ? `${v.won}-${v.lost}${v.push ? "-" + v.push : ""}` : "—";
+function summaryCells(v) {
+  return `<td>${v.bets}</td><td>${recordText(v)}</td><td>${v.graded ? fmt(v.units_risked, 2) : "—"}</td>
+    <td class="${v.units > 0 ? "res-won" : v.units < 0 ? "res-lost" : ""}">${v.graded ? signed(v.units, 2) : "—"}</td>
+    <td>${v.roi != null ? signed(100 * v.roi, 1) + "%" : "—"}</td><td>${v.avg_clv != null ? signed(100 * v.avg_clv, 1) : "—"}</td>
+    <td>${v.beat_close != null ? pct(v.beat_close, 0) + "%" : "—"}</td><td>${v.open ? `${v.open} <small style="color:var(--muted)">${fmt(v.open_units, 2)}u</small>` : "—"}</td>`;
+}
+const SUMMARY_HEAD = `<th>Bets</th><th>Record</th><th>Risked</th><th>Units</th><th>Return</th><th title="Average closing-line value, in points of chance">CLV</th><th title="Share of graded bets where the market moved toward the pick by tip-off">Beat close</th><th>Open</th>`;
 function renderBets() {
   const d = S.bets;
   if (!d) { $("#bt-games").innerHTML = `<div class="empty">Bets have not been published yet.</div>`; return; }
-  const st = d.settings, sm = d.summary ?? {};
+  const st = d.settings;
+  const big = (b) => BV.size === "all" || b.units >= 1;
+  document.querySelectorAll("#bt-size button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.size === BV.size)));
   $("#bt-warn").innerHTML = `The model has no live track record yet, so every pick uses a chance halfway between the model's and the market's, and stakes are a quarter of the Kelly amount. Treat this as a test of the model, not proven advice: the ledger below and the "beat the closing line" rate are how you'll know whether it has an edge. Bet only what you can afford to lose. If gambling stops being fun, call or text 1-800-GAMBLER.`;
   const card = (k, v, s, cls = "") => `<div class="bt-card"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s}</div></div>`;
-  const led = fromCols(d.ledger);
-  const pend = ovReconcile(led);
+  const ledAll = fromCols(d.ledger);
+  const pend = ovReconcile(ledAll);
+  const led = ledAll.filter(big);
+  const sm = betSummary(led);
+  const hidden = ledAll.length - led.length;
+  $("#bt-size-note").textContent = BV.size === "all" ? `All ${ledAll.length} bets on the ledger` : `${led.length} bets of 1+ units shown; ${hidden} smaller bets hidden (still tracked)`;
   const open = led.filter((b) => b.status === "open");
   $("#bt-cards").innerHTML = [
     card("Record", sm.graded ? `${sm.won}-${sm.lost}${sm.push ? "-" + sm.push : ""}` : "—", `${sm.graded ?? 0} graded of ${sm.bets ?? 0}`),
@@ -1958,13 +2002,13 @@ function renderBets() {
   // today's locked picks, by game
   const today = etDate(0);
   const keyOf = (b) => b.kind === "prop" ? `${b.game_id}|prop|${b.player_id}|${b.stat}` : `${b.game_id}|${b.kind === "total" ? "total" : "side"}`;
-  const lockedKeys = new Set(led.map(keyOf));
+  const lockedKeys = new Set(ledAll.map(keyOf));
   const upcoming = led.filter((b) => b.game_date >= today && (b.status === "open" || b.game_date === today));
   // picks that qualify at the latest prices but aren't locked yet (prices too old to lock, or the day's cap reached)
   const gmeta = (gid) => { const g = S.simByGame[gid]; return g ? { game_date: g.game_date, tip_utc: g.tip_utc, home_team_id: g.home_team_id, away_team_id: g.away_team_id } : {}; };
   const started = (gid) => { const g = ["today", "tomorrow"].flatMap((k) => S.schedule?.[k]?.games ?? []).find((x) => x.game_id === gid);
     return !g || g.status !== "scheduled" || (g.tip_utc && new Date(g.tip_utc) <= new Date()); };
-  for (const c of d.current ?? []) if (!lockedKeys.has(keyOf(c)) && !started(c.game_id)) upcoming.push({ ...c, ...gmeta(c.game_id), status: "live", created_at: c.odds_at });
+  for (const c of d.current ?? []) if (big(c) && !lockedKeys.has(keyOf(c)) && !started(c.game_id)) upcoming.push({ ...c, ...gmeta(c.game_id), status: "live", created_at: c.odds_at });
   const byGame = new Map();
   for (const b of upcoming) { if (!byGame.has(b.game_id)) byGame.set(b.game_id, []); byGame.get(b.game_id).push(b); }
   const games = [...byGame.entries()].sort((a, b) => (a[1][0].tip_utc ?? "").localeCompare(b[1][0].tip_utc ?? ""));
@@ -1977,20 +2021,27 @@ function renderBets() {
     return `<div class="bt-game"><h3><span>${abbr(g.away_team_id)} @ ${abbr(g.home_team_id)}</span><small>${fmtTime(g.tip_utc)} · ${fmt(tot, 2)} units</small></h3>${rows}</div>`;
   }).join("") : `<div class="empty">No picks qualify at the latest prices${d.odds_as_of ? ` (${fmtStamp(d.odds_as_of)})` : ""}. Odds are pulled about every 75 to 90 minutes on game days, starting late morning.</div>`;
   // ledger
-  const kind = $("#bt-kind").value, status = $("#bt-status").value;
+  $("#bt-periods").innerHTML = `<thead><tr><th class="l">Period</th>${SUMMARY_HEAD}</tr></thead><tbody>${BET_PERIODS.map(([p, label]) => {
+    const rows = led.filter((b) => inPeriod(b, p));
+    return `<tr${p === "season" ? ' style="font-weight:600"' : ""}><td class="l">${label}</td>${summaryCells(betSummary(rows))}</tr>`; }).join("")}</tbody>`;
+  const kind = $("#bt-kind").value, status = $("#bt-status").value, period = $("#bt-period").value;
   const mkt = (b) => b.kind === "prop" ? b.stat : b.kind;
-  const rows = led.filter((b) => (!kind || b.kind === kind || mkt(b) === kind) && (!status || b.status === status));
+  const rows = led.filter((b) => (!kind || b.kind === kind || mkt(b) === kind) && (!status || b.status === status) && inPeriod(b, period));
   const head = `<thead><tr><th class="l">Date</th><th class="l">Bet</th><th class="l">Type</th><th class="l" title="Your odds when you recorded different ones; otherwise the recommended odds and book">Odds and book</th><th>Units</th><th>Model</th><th>Market</th><th>Exp. return</th><th class="l">Result</th><th>Actual</th><th>P/L</th><th title="Market's fair chance for this side at the last pull before tip-off, minus when the bet was made">Closing line</th></tr></thead>`;
   const body = rows.map((b) => `<tr><td class="l">${fmtDay(b.game_date)}</td><td class="l">${betLabel(b)}</td><td class="l">${esc(MARKET_LABEL[mkt(b)] ?? b.kind)}</td>
     <td class="l">${priceCell(b, pend)}<br>${ovButton(b)}</td><td>${fmt(b.units, 2)}</td><td>${pct(b.p_model)}%</td><td>${pct(b.p_market)}%</td><td>${signed(100 * b.ev, 1)}%</td>
     <td class="l">${betResultCell(b)}</td><td>${b.result == null ? "—" : b.kind === "total" || b.kind === "prop" ? fmt(b.result, 0) : signed(b.result, 0)}</td>
-    <td class="${b.pnl > 0 ? "res-won" : b.pnl < 0 ? "res-lost" : ""}">${b.pnl == null ? "—" : signed(b.pnl, 2)}</td><td>${b.clv == null ? "—" : signed(100 * b.clv, 1)}</td></tr>`).join("");
+    <td class="${b.pnl > 0 ? "res-won" : b.pnl < 0 ? "res-lost" : ""}">${b.pnl == null ? "—" : signed(b.pnl, 2)}</td><td>${b.clv == null ? "—" : Math.abs(100 * b.clv) < 0.05 ? "0.0" : signed(100 * b.clv, 1)}</td></tr>`).join("");
   $("#bt-table").innerHTML = head + `<tbody>${body || `<tr><td class="empty" colspan="12">No bets yet.</td></tr>`}</tbody>`;
   $("#bt-count").textContent = `${rows.length} bets. Result for spreads and moneylines is the home team's final margin. Where you recorded different odds, the result and P/L use your odds and line; the closing-line column always grades the recommended pick.`;
-  const kinds = [...Object.entries(d.by_market ?? {}).map(([k, v]) => [MARKET_LABEL[k] ?? k, v, false]),
-    ...(d.by_kind?.prop ? [["All player props", d.by_kind.prop, true]] : [])];
-  const typeRow = ([label, v, bold]) => `<tr${bold ? ' style="font-weight:600"' : ""}><td class="l">${esc(label)}</td><td>${v.bets}</td><td>${v.graded ? `${v.won}-${v.lost}${v.push ? "-" + v.push : ""}` : "—"}</td><td>${v.graded ? fmt(v.units_risked, 2) : "—"}</td><td class="${v.units > 0 ? "res-won" : v.units < 0 ? "res-lost" : ""}">${v.graded ? signed(v.units, 2) : "—"}</td><td>${v.roi != null ? signed(100 * v.roi, 1) + "%" : "—"}</td><td>${v.avg_clv != null ? signed(100 * v.avg_clv, 1) : "—"}</td><td>${v.beat_close != null ? pct(v.beat_close, 0) + "%" : "—"}</td></tr>`;
-  $("#bt-kinds").innerHTML = kinds.length ? `<div class="table-wrap"><table><thead><tr><th class="l">Type</th><th>Bets</th><th>Record</th><th>Risked</th><th>Units</th><th>Return</th><th title="Average closing-line value, in points of chance">CLV</th><th>Beat close</th></tr></thead><tbody>${kinds.map(typeRow).join("")}</tbody></table></div>
+  // results by bet type, for the period picked above the ledger
+  const inP = led.filter((b) => inPeriod(b, period));
+  const order = ["pts", "reb", "ast", "fg3m", "pra", "pr", "pa", "ra", "moneyline", "spread", "total"];
+  const kinds = [...order.map((m) => [MARKET_LABEL[m], inP.filter((b) => mkt(b) === m), false]).filter(([, r]) => r.length),
+    ...(inP.some((b) => b.kind === "prop") ? [["All player props", inP.filter((b) => b.kind === "prop"), true]] : [])];
+  $("#bt-kinds-title").textContent = `Results by bet type · ${BET_PERIODS.find(([p]) => p === period)?.[1] ?? "Season"}`;
+  const typeRow = ([label, r, bold]) => `<tr${bold ? ' style="font-weight:600"' : ""}><td class="l">${esc(label)}</td>${summaryCells(betSummary(r))}</tr>`;
+  $("#bt-kinds").innerHTML = kinds.length ? `<div class="table-wrap"><table><thead><tr><th class="l">Type</th>${SUMMARY_HEAD}</tr></thead><tbody>${kinds.map(typeRow).join("")}</tbody></table></div>
     <p class="pr-note">A few dozen bets says almost nothing about skill; even a few hundred leaves a wide range. Beating the closing line (the market moving toward the pick after it was made) shows up much sooner than profit does.</p>` : `<p class="pr-note">Nothing on the ledger yet.</p>`;
   $("#bt-rules").innerHTML = `<p class="pr-note"><strong>Books:</strong> state-licensed US sportsbooks only (${esc(st.legal_books.filter((b) => BOOK_NAME[b]).map(bookName).filter((v, i, a) => a.indexOf(v) === i).join(", "))}, and others where licensed). Offshore books in the feed are ignored. Check which of these operate in your state.</p>
     <p class="pr-note"><strong>Chances:</strong> props use the props model; moneylines use the simulation's win chance; spreads and totals use a normal curve around the simulated margin and total, as wide as the simulation's misses on last season's replay. The chance used for a bet is ${Math.round(100 * st.blend)}% model and ${Math.round(100 * (1 - st.blend))}% market.</p>
@@ -3173,7 +3224,9 @@ async function init() {
   const prGames = [...new Set((S.props?.props ?? []).map((p) => p.game_id))];
   $("#pr-game").insertAdjacentHTML("beforeend", prGames.map((g) => `<option value="${esc(g)}">${esc(gameLabel(g))}</option>`).join(""));
   $("#pr-stat").insertAdjacentHTML("beforeend", Object.entries(S.props?.stat_labels ?? {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""));
-  ["#bt-kind", "#bt-status"].forEach((sel) => $(sel).addEventListener("input", renderBets));
+  ["#bt-kind", "#bt-status", "#bt-period"].forEach((sel) => $(sel).addEventListener("input", renderBets));
+  document.querySelectorAll("#bt-size button").forEach((x) => x.addEventListener("click", () => {
+    BV.size = x.dataset.size; try { localStorage.setItem("betSize", BV.size); } catch (_) {} renderBets(); }));
   ["#pr-game", "#pr-stat", "#pr-search", "#pr-edge", "#pr-books", "#pr-hist"].forEach((sel) => $(sel).addEventListener("input", () => { S.propsView.open = null; renderProps(); }));
   if (!S.logs[S.meta.season]?.length && seasons.includes(S.meta.previous_season)) $("#f-season").value = S.meta.previous_season;
 
