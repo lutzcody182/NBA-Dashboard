@@ -25,6 +25,10 @@ import pandas as pd
 from ..models import props as PM
 from ..providers import odds_api as OA
 
+# A bet "beat the close" only if the market moved toward it by more than rounding noise. Many bets are
+# locked from the last pull before tip-off, so their closing price is their own price (CLV exactly 0).
+BEAT_EPS = 5e-5
+
 PLAYER_STATS = ("min", "pts", "reb", "ast", "fg3m")
 BASE_GAMES = 20
 PROP_STAT = {"pts": ("pts",), "reb": ("reb",), "ast": ("ast",), "fg3m": ("fg3m",), "pra": ("pts", "reb", "ast"),
@@ -213,7 +217,7 @@ def _bet_block(b):
     return {"n": int(len(b)), "units": _r(b["pnl"].sum(), 2), "risked": _r(risked, 2),
             "roi": _r(b["pnl"].sum() / risked, 4) if risked else None,
             "avg_clv": _r(clv.mean(), 4) if len(clv) else None,
-            "beat_close": _r((clv > 0).mean()) if len(clv) else None}
+            "beat_close": _r((clv > BEAT_EPS).mean()) if len(clv) else None}
 
 
 def build(conn, season) -> dict:
