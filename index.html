@@ -398,6 +398,28 @@ dialog.ovd { width: min(460px, calc(100vw - 32px)); }
 .pr-grid table td, .pr-grid table th { font-size: 13px; }
 .pr-grid th { position: static; cursor: default; }
 .pr-note { color: var(--muted); font-size: 13px; margin: 6px 0 0; white-space: normal; }
+
+/* quadrants */
+.qgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 14px; margin-bottom: 18px; }
+.qsec { font: 700 20px var(--cond); margin: 18px 0 10px; }
+.qcard { min-width: 0; }
+.qhead { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.qhead h3 { margin: 0 0 2px; }
+.qout { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 3px 9px; cursor: pointer; font-size: 12px; }
+.qchart { width: 100%; height: auto; display: block; margin-top: 4px; }
+.qaxis text { fill: var(--muted); font-size: 11px; }
+.qchart .qgl { stroke: var(--line); stroke-width: 1; }
+.qref { stroke: var(--muted); stroke-dasharray: 5 4; stroke-width: 1.2; opacity: .8; }
+.qdiag { stroke: var(--accent); stroke-dasharray: 2 4; stroke-width: 1.2; opacity: .7; }
+.qlab { fill: var(--muted); font: 600 12.5px var(--body); opacity: .9; pointer-events: none; }
+.qtitle { fill: var(--muted); font: 600 12px var(--body); }
+.qzone { fill: transparent; cursor: zoom-in; }
+.qzone:hover { fill: rgba(255, 255, 255, .03); }
+.qmark { cursor: pointer; }
+.qtip { position: fixed; z-index: 60; pointer-events: none; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 8px 10px; font-size: 12.5px; min-width: 190px; max-width: 280px; box-shadow: 0 6px 20px rgba(0,0,0,.35); }
+.qtip span { color: var(--muted); }
+.qrow { display: flex; justify-content: space-between; gap: 14px; margin-top: 3px; }
+.qrow b { font-weight: 600; white-space: nowrap; }
 @media (max-width: 720px) { .pr-grid { grid-template-columns: minmax(0, 1fr); } }
 /* Daily */
 .lb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(212px, 100%), 1fr)); gap: 12px; margin-bottom: 18px; }
@@ -433,6 +455,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     <button class="tab" role="tab" data-view="teams" aria-selected="false">Teams</button>
     <button class="tab" role="tab" data-view="lineups" aria-selected="false">Lineups</button>
     <button class="tab" role="tab" data-view="lab" aria-selected="false">Analytics</button>
+    <button class="tab" role="tab" data-view="quads" aria-selected="false">Quadrants</button>
     <button class="tab" role="tab" data-view="zones" aria-selected="false">Shot zones</button>
     <button class="tab" role="tab" data-view="players" aria-selected="false">Players</button>
     <button class="tab" role="tab" data-view="model" aria-selected="false">Model</button>
@@ -632,6 +655,14 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     </div>
     <div id="lab-body"></div>
   </section>
+
+  <!-- Quadrants -->
+  <section class="view" id="view-quads" hidden>
+    <h2>Quadrants</h2>
+    <p class="sub">Each chart splits the league into four types using two measures. Dashed lines mark the league average (or zero, or 50%, where that is the natural middle); every axis is set so up and right are better or bigger. Hover for the numbers, tap a team to open its page or a player to open his. <b>Click any corner of a chart to zoom into it</b> and see every name there. The players farthest from average are labeled; pick a team to highlight its players, or find one player on every chart.</p>
+    <div id="qd-body"></div>
+  </section>
+  <div id="qtip" class="qtip" hidden></div>
 
   <!-- Teams -->
   <section class="view" id="view-teams" hidden>
@@ -3002,6 +3033,274 @@ function initLab() {
   document.querySelectorAll("#lab-topic button").forEach((b) => b.addEventListener("click", () => { LAB.topic = b.dataset.t; renderLab(); }));
 }
 
+// ============================== QUADRANTS ==============================
+const QD = { season: null, who: "all", kind: "all", team: "", find: "", pos: "", minMin: 15, minGp: null, minFga: null, zoom: {} };
+const TEAM_COLORS = { ATL: "#E03A3E", BOS: "#2E9E5B", BKN: "#A7A9AC", CHA: "#1D9FB3", CHI: "#CE1141", CLE: "#B0305A", DAL: "#2F7FC1",
+  DEN: "#FEC524", DET: "#D6293F", GSW: "#FFC72C", HOU: "#E4002B", IND: "#FDBB30", LAC: "#3E6FC4", LAL: "#8A5CC2", MEM: "#7D97C9",
+  MIA: "#C8384F", MIL: "#3E8E4F", MIN: "#4D8CC4", NOP: "#B49B6B", NYK: "#F58426", OKC: "#2F9BDB", ORL: "#2C8FD6", PHI: "#3D85CF",
+  PHX: "#E56020", POR: "#E8483F", SAC: "#8A62B5", SAS: "#C4CED4", TOR: "#D9324B", UTA: "#9B7BD4", WAS: "#E31837" };
+const qColor = (tid) => TEAM_COLORS[abbr(tid)] ?? "#8494A8";
+const qLight = (hex) => { const n = parseInt(hex.slice(1), 16); return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) > 150; };
+const qfin = Number.isFinite;
+const qMean = (a) => { const v = a.filter(qfin); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : NaN; };
+const qRow = (l, v) => `<div class="qrow"><span>${esc(l)}</span><b>${esc(v)}</b></div>`;
+const f0 = (v) => fmt(v, 0), f1 = (v) => fmt(v, 1), f2 = (v) => fmt(v, 2), s1 = (v) => signed(v, 1), p0 = (v) => `${fmt(v, 0)}%`, p1 = (v) => `${fmt(v, 1)}%`;
+function qTicks(a, b, n) {
+  const raw = (b - a) / n, mag = 10 ** Math.floor(Math.log10(raw)), step = [1, 2, 5, 10].map((k) => k * mag).find((s) => s >= raw) ?? raw;
+  const out = []; for (let v = Math.ceil(a / step) * step; v <= b + 1e-9; v += step) out.push(+v.toFixed(10)); return out;
+}
+// one quadrant chart. Corner names are where they sit on screen; revX / revY flip an axis so right / up is always "better".
+function qChart(o) {
+  const W = 640, H = 460, m = { l: 58, r: 18, t: 18, b: 46 };
+  const all = o.pts.filter((p) => qfin(p.x) && qfin(p.y));
+  if (all.length < (o.team ? 6 : 8)) return `<p class="pr-note">Not enough ${o.team ? "teams" : "players"} with data yet.</p>`;
+  const avgX = o.avgX ?? qMean(all.map((p) => p.x)), avgY = o.avgY ?? qMean(all.map((p) => p.y));
+  const right = (p) => (o.revX ? p.x <= avgX : p.x >= avgX), top = (p) => (o.revY ? p.y <= avgY : p.y >= avgY);
+  const z = QD.zoom[o.key], inZ = (p) => (z[1] === "r" ? right(p) : !right(p)) && (z[0] === "t" ? top(p) : !top(p));
+  let pts = z && all.some(inZ) ? all.filter(inZ) : all;
+  const zoomed = pts !== all;
+  const found = !o.team && QD.find ? all.find((p) => String(p.id) === String(QD.find)) : null;
+  if (found && !pts.includes(found)) pts = [...pts, found];
+  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (!zoomed) { x0 = Math.min(x0, avgX); x1 = Math.max(x1, avgX); y0 = Math.min(y0, avgY); y1 = Math.max(y1, avgY); }
+  const px = (x1 - x0) * 0.08 || 1, py = (y1 - y0) * 0.08 || 1; x0 -= px; x1 += px; y0 -= py; y1 += py;
+  const sx = (v) => m.l + (o.revX ? x1 - v : v - x0) / (x1 - x0) * (W - m.l - m.r);
+  const sy = (v) => H - m.b - (o.revY ? y1 - v : v - y0) / (y1 - y0) * (H - m.t - m.b);
+  const fx = o.fx ?? f1, fy = o.fy ?? f1;
+  let g = "";
+  for (const t of qTicks(x0, x1, 6)) g += `<line class="qgl" x1="${sx(t)}" x2="${sx(t)}" y1="${m.t}" y2="${H - m.b}"/><text x="${sx(t)}" y="${H - m.b + 16}" text-anchor="middle">${fx(t)}</text>`;
+  for (const t of qTicks(y0, y1, 6)) g += `<line class="qgl" x1="${m.l}" x2="${W - m.r}" y1="${sy(t)}" y2="${sy(t)}"/><text x="${m.l - 6}" y="${sy(t) + 4}" text-anchor="end">${fy(t)}</text>`;
+  let ref = "";
+  if (avgX > x0 && avgX < x1) ref += `<line class="qref" x1="${sx(avgX)}" x2="${sx(avgX)}" y1="${m.t}" y2="${H - m.b}"/>`;
+  if (avgY > y0 && avgY < y1) ref += `<line class="qref" x1="${m.l}" x2="${W - m.r}" y1="${sy(avgY)}" y2="${sy(avgY)}"/>`;
+  if (o.diag) { const a = Math.max(x0, y0), b = Math.min(x1, y1); if (b > a) ref += `<line class="qdiag" x1="${sx(a)}" y1="${sy(a)}" x2="${sx(b)}" y2="${sy(b)}"/>`; }
+  if (!zoomed) {   // invisible corners: click one to zoom into it
+    const cx = Math.min(Math.max(sx(avgX), m.l), W - m.r), cy = Math.min(Math.max(sy(avgY), m.t), H - m.b);
+    for (const [q, X0, Y0, X1, Y1] of [["tl", m.l, m.t, cx, cy], ["tr", cx, m.t, W - m.r, cy], ["bl", m.l, cy, cx, H - m.b], ["br", cx, cy, W - m.r, H - m.b]])
+      ref += `<rect class="qzone" data-qz="${esc(o.key)}" data-q="${q}" x="${X0}" y="${Y0}" width="${Math.max(0, X1 - X0)}" height="${Math.max(0, Y1 - Y0)}"><title>Click to zoom into this corner</title></rect>`;
+  }
+  const [tl, tr, bl, br] = o.quad;
+  const ql = zoomed ? `<text class="qlab" x="${m.l + 8}" y="${m.t + 16}">${esc({ tl, tr, bl, br }[z])}</text>`
+    : `<text class="qlab" x="${m.l + 8}" y="${m.t + 16}">${esc(tl)}</text><text class="qlab" x="${W - m.r - 8}" y="${m.t + 16}" text-anchor="end">${esc(tr)}</text><text class="qlab" x="${m.l + 8}" y="${H - m.b - 8}">${esc(bl)}</text><text class="qlab" x="${W - m.r - 8}" y="${H - m.b - 8}" text-anchor="end">${esc(br)}</text>`;
+  let marks = "";
+  const hl = QD.team ? +QD.team : null;
+  if (o.team) {
+    const order = [...pts].sort((a, b) => (hl ? (a.id === hl) - (b.id === hl) : 0));
+    marks = order.map((p) => {
+      const c = qColor(p.id), on = !hl || p.id === hl, r = p.id === hl ? 15 : 12;
+      return `<g class="qmark" data-team="${p.id}" data-tip="${esc(p.tip)}" style="opacity:${on ? 1 : 0.25}"><circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="${r}" fill="${c}" stroke="var(--bg)" stroke-width="1.5"/><text x="${sx(p.x)}" y="${sy(p.y) + 3.5}" text-anchor="middle" font-size="${r > 12 ? 10.5 : 9}" font-weight="700" fill="${qLight(c) ? "#111" : "#fff"}">${esc(abbr(p.id))}</text></g>`;
+    }).join("");
+  } else {
+    let labelN = zoomed ? (pts.length <= 30 ? pts.length : 20) : (o.labelN ?? 10);
+    const sdx = Math.sqrt(qMean(xs.map((v) => (v - avgX) ** 2))) || 1, sdy = Math.sqrt(qMean(ys.map((v) => (v - avgY) ** 2))) || 1;
+    const far = new Set((hl && !zoomed ? pts.filter((p) => p.tm === hl)
+      : [...pts].sort((a, b) => Math.hypot((b.x - avgX) / sdx, (b.y - avgY) / sdy) - Math.hypot((a.x - avgX) / sdx, (a.y - avgY) / sdy)).slice(0, labelN)).map((p) => p.id));
+    if (found) far.add(found.id);
+    const boxes = [], side = {}, txt = (p) => (found && p.id === found.id ? p.n : String(p.n).split(" ").slice(-1)[0]);
+    for (const p of pts.filter((p) => far.has(p.id)).sort((a, b) => (found && b.id === found.id) - (found && a.id === found.id))) {
+      const cx = sx(p.x), cy = sy(p.y), w = txt(p).length * 6.6 + 4, r = 8;
+      const opts = [[cx + r, cx + r + w, "r"], [cx - r - w, cx - r, "l"]].filter(([a, b]) => a >= m.l && b <= W - 2);
+      const ok = opts.find(([a, b]) => !boxes.some((q) => a < q[1] && b > q[0] && cy - 7 < q[3] && cy + 7 > q[2]));
+      if (ok) { boxes.push([ok[0], ok[1], cy - 7, cy + 7]); side[p.id] = ok[2]; } else if (found && p.id === found.id) side[p.id] = opts[0] ? opts[0][2] : "l";
+    }
+    const order = [...pts].sort((a, b) => (side[a.id] ? 1 : 0) - (side[b.id] ? 1 : 0) || (found ? (a === found) - (b === found) : 0));
+    marks = order.map((p) => {
+      const me = found && p.id === found.id, on = me || (!found && (!hl || p.tm === hl)), cx = sx(p.x), cy = sy(p.y), lab = side[p.id], r = me ? 7.5 : lab ? 5.5 : 4.2;
+      return `<g class="qmark" data-player="${p.id}" data-tip="${esc(p.tip)}" style="opacity:${on ? 1 : found ? 0.3 : 0.18}"><circle cx="${cx}" cy="${cy}" r="10" fill="transparent"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="${qColor(p.tm)}" fill-opacity=".9" stroke="${me ? "var(--text)" : "var(--panel)"}" stroke-width="${me ? 2.5 : 1.1}"/>${lab ? `<text x="${lab === "l" ? cx - r - 3 : cx + r + 3}" y="${cy + 4}" text-anchor="${lab === "l" ? "end" : "start"}" font-size="${me ? 13.5 : 11.5}" font-weight="${me ? 800 : 600}" fill="var(--text)" paint-order="stroke" stroke="var(--panel)" stroke-width="3">${esc(txt(p))}</text>` : ""}</g>`;
+    }).join("");
+  }
+  return `<svg class="qchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(o.xl)} against ${esc(o.yl)}"><g class="qaxis">${g}</g>${ref}${ql}${marks}
+    <text class="qtitle" x="${(m.l + W - m.r) / 2}" y="${H - 8}" text-anchor="middle">${esc(o.xl)} →</text>
+    <text class="qtitle" transform="translate(14 ${(m.t + H - m.b) / 2}) rotate(-90)" text-anchor="middle">${esc(o.yl)} →</text></svg>`;
+}
+const qCard = (key, sub, chart, note) => `<div class="panel qcard"><div class="qhead"><h3>${esc(key)}</h3>${QD.zoom[key] ? `<button class="qout" data-qzout="${esc(key)}">⤢ Show all</button>` : ""}</div><p class="pr-note" style="margin:0 0 6px">${sub}</p>${chart}${note ? `<p class="pr-note">${note}</p>` : ""}</div>`;
+
+// ---------- teams ----------
+function quadTeams(season, kind) {
+  const R = S.ratings[season]?.teams ?? [], A = LAB.data[season]?.teams ?? {};
+  if (!R.length) return { basic: [], deep: [] };
+  const gpMed = R.map((t) => t.games).sort((a, b) => a - b)[R.length >> 1] ?? 0;
+  const head = (t) => `<b>${esc(S.teamById[t.team_id]?.name ?? abbr(t.team_id))}</b> <span>${t.wins}-${t.losses}</span>`;
+  const mk = (key, sub, f, opts, note) => {
+    const pts = R.map((t) => { const a = A[t.team_id] ?? {}; const r = f(t, a); if (!r) return null; return { id: t.team_id, x: r.x, y: r.y, tip: head(t) + r.rows.map(([l, v]) => qRow(l, v)).join("") }; }).filter(Boolean);
+    return qCard(key, sub, qChart({ ...opts, pts, key, team: true }), note);
+  };
+  const basic = [
+    mk("Offense vs. defense", "Points scored and allowed per 100 possessions, adjusted for opponents and home court", (t) => ({ x: t.adj_ortg, y: t.adj_drtg, rows: [["Adj. offense", f1(t.adj_ortg)], ["Adj. defense", f1(t.adj_drtg)], ["Adj. net", s1(t.adj_net)]] }),
+      { xl: "Offense (adjusted rating)", yl: "Defense (fewer allowed is higher)", revY: true, quad: ["🛡️ Defense carries them", "🏆 Contenders", "🗑️ Struggling on both ends", "🔥 Offense carries them"] }),
+    mk("Pace vs. strength", "Possessions per 48 minutes against adjusted net rating", (t) => ({ x: t.pace, y: t.adj_net, rows: [["Pace", f1(t.pace)], ["Adj. net", s1(t.adj_net)]] }),
+      { xl: "Pace (possessions per 48)", yl: "Adjusted net rating", fy: s1, quad: ["🐢 Slow and good", "🏃 Fast and good", "🐌 Slow and bad", "💨 Fast and bad"] }, "Two fast teams push a game total up; slow, good teams tend to win low-scoring games."),
+    mk("Record vs. point differential", "Actual win % against the win % their scoring margin points to", (t) => ({ x: 100 * t.expected_wins / t.games, y: 100 * t.wins / t.games, rows: [["Record", `${t.wins}-${t.losses}`], ["Expected wins", `${f1(t.expected_wins)} of ${t.games}`], ["Wins above expected", s1(t.wins - t.expected_wins)]] }),
+      { xl: "Expected win % (from point differential)", yl: "Actual win %", fx: p0, fy: p0, avgX: 50, avgY: 50, diag: true, quad: ["🍀 Winning more than they should", "🏆 Good and winning", "📉 Bad and losing", "😤 Better than their record"] }, "Above the diagonal: winning more close games than their margin suggests, which rarely lasts. Below it: due for more wins."),
+    mk("Home vs. road", "Net rating at home and on the road", (t) => (t.home?.games >= 2 && t.away?.games >= 2 ? { x: t.home.net, y: t.away.net, rows: [["Home net", `${s1(t.home.net)} (${t.home.wins}-${t.home.games - t.home.wins})`], ["Road net", `${s1(t.away.net)} (${t.away.wins}-${t.away.games - t.away.wins})`]] } : null),
+      { xl: "Net rating at home", yl: "Net rating on the road", fx: s1, fy: s1, diag: true, quad: ["🧳 Road warriors", "🌍 Good everywhere", "🥀 Bad everywhere", "🏠 Home-court heroes"] }),
+    gpMed >= 15 ? mk("Hot or cold", "Season adjusted net rating against the last 10 games", (t) => ({ x: t.adj_net, y: t.last?.["10"]?.net, rows: [["Season adj. net", s1(t.adj_net)], ["Last 10 net", s1(t.last?.["10"]?.net)], ["Last 10", `${t.last?.["10"]?.wins}-${(t.last?.["10"]?.games ?? 0) - (t.last?.["10"]?.wins ?? 0)}`]] }),
+      { xl: "Season adjusted net rating", yl: "Net rating, last 10 games", fx: s1, fy: s1, diag: true, quad: ["📈 Heating up", "🔥 Good and rolling", "🥶 Bad and sliding", "📉 Good but cooling off"] }, "Last-10 numbers are not adjusted for opponents. Above the diagonal: playing better lately than over the season.") : "",
+    mk("Schedule check", "Average strength of opponents faced against raw net rating", (t) => ({ x: t.sos, y: t.net, rows: [["Opponents' avg. adj. net", s1(t.sos)], ["Net rating (raw)", s1(t.net)], ["Adj. net", s1(t.adj_net)]] }),
+      { xl: "Schedule strength (tougher →)", yl: "Net rating, not adjusted", fx: s1, fy: s1, quad: ["🍰 Padded by an easy schedule", "💪 Battle-tested and winning", "😬 Easy schedule, still losing", "🌪️ Tough schedule, struggling"] }, "Schedule strength is the average adjusted net rating of opponents they have played."),
+    mk("Shooting vs. ball security", "Effective FG% against turnovers per 100 possessions", (t) => ({ x: 100 * t.efg, y: 100 * t.tov_pct, rows: [["eFG%", p1(100 * t.efg)], ["Turnover rate", p1(100 * t.tov_pct)]] }),
+      { xl: "Effective FG%", yl: "Turnover rate (fewer is higher)", revY: true, fx: p0, fy: p0, quad: ["🧹 Careful, can't shoot", "🎯 Efficient and careful", "😵 Sloppy and cold", "🎲 Shoot well, give it away"] }),
+    mk("Three-point style", "Share of shots that are threes against effective FG%", (t) => ({ x: 100 * t.three_rate, y: 100 * t.efg, rows: [["3PA share of FGA", p1(100 * t.three_rate)], ["eFG%", p1(100 * t.efg)]] }),
+      { xl: "Three-point attempt rate", yl: "Effective FG%", fx: p0, fy: p0, quad: ["🏀 Efficient without the three", "🎯 Three-point machines", "🧱 Old school, struggling", "🎰 Live and die by the three"] }, "Teams on the right have higher game-to-game variance: their totals and margins swing more."),
+    mk("Glass work", "Offensive and defensive rebounding rates", (t) => ({ x: 100 * t.orb_pct, y: 100 * t.drb_pct, rows: [["OREB%", p1(100 * t.orb_pct)], ["DREB%", p1(100 * t.drb_pct)], ["2nd-chance pts / 100", f1(t.second_chance_100)]] }),
+      { xl: "Offensive rebound %", yl: "Defensive rebound %", fx: p0, fy: p0, quad: ["🔒 Finish defensive stops", "💪 Own the glass", "🫥 Lose the glass", "🔁 Crash the offensive glass"] }),
+    mk("Defensive style", "Turnovers forced against opponents' effective FG%", (t) => ({ x: 100 * t.forced_tov_pct, y: 100 * t.opp_efg, rows: [["Forced turnover rate", p1(100 * t.forced_tov_pct)], ["Opp. eFG%", p1(100 * t.opp_efg)], ["Opp. 3PA rate", p1(100 * t.opp_three_rate)]] }),
+      { xl: "Turnovers forced per 100", yl: "Opponent eFG% (lower is higher)", revY: true, fx: p0, fy: p0, quad: ["🧱 Contest, don't gamble", "🦾 Elite and disruptive", "🚪 Leaky", "🎣 Gamblers: steals, open shots"] }),
+  ];
+  const off = (a) => a.shooting?.off, def = (a) => a.shooting?.def;
+  const deep = !Object.keys(A).length ? [] : [
+    mk("Shot quality vs. shot-making", "Offense: how good their shots are against how much better or worse than expected they make them", (t, a) => off(a) ? { x: 100 * off(a).xefg, y: 100 * off(a).making, rows: [["Shot quality (xeFG%)", p1(100 * off(a).xefg)], ["Actual eFG%", p1(100 * off(a).efg)], ["Shot-making", `${s1(100 * off(a).making)} pts of eFG%`]] } : null,
+      { xl: "Shot quality (expected eFG%)", yl: "Shot-making (eFG% above expected)", avgY: 0, fx: p0, fy: s1, quad: ["🎯 Tough shots, hitting them", "⭐ Great looks, cashing in", "🧱 Tough shots, missing", "📈 Great looks, missing (due)"] }, "Shot quality comes from the shot model (distance, angle, shot type, transition, putbacks, shot clock). Shot-making well above zero usually cools off; shot quality holds up."),
+    mk("Defense: shots allowed vs. opponent luck", "Quality of shots allowed against how opponents shot compared with expected", (t, a) => def(a) ? { x: 100 * def(a).xefg, y: 100 * def(a).making, rows: [["Opp. shot quality", p1(100 * def(a).xefg)], ["Opp. eFG%", p1(100 * def(a).efg)], ["Opp. shot-making", `${s1(100 * def(a).making)} pts`]] } : null,
+      { xl: "Shot quality allowed (worse looks →)", yl: "Opponents vs. expected (colder ↑)", revX: true, revY: true, avgY: 0, fx: p0, fy: s1, quad: ["🍀 Allow good looks, opponents miss", "🔒 Tough looks and misses", "🚨 Allow good looks, pay for it", "😤 Good defense, opponents hot"] }, "Right side is the repeatable part of defense. Up/down is mostly luck: teams near the top tend to allow more points going forward."),
+    mk("Luck check", "Luck-adjusted net rating against actual net rating", (t, a) => a.luck ? { x: a.luck.adj_net, y: a.luck.net, rows: [["Actual net", s1(a.luck.net)], ["Luck-adjusted net", s1(a.luck.adj_net)], ["Opp. 3P luck", `${s1(a.luck.opp_three_luck)} pts / 100`], ["Opp. FT luck", `${s1(a.luck.opp_ft_luck)} pts / 100`]] } : null,
+      { xl: "Luck-adjusted net rating", yl: "Actual net rating", fx: s1, fy: s1, diag: true, quad: ["🍀 Results ahead of the play", "🏆 Good either way", "🗑️ Bad either way", "📈 Play better than results"] }, "Luck-adjusted swaps opponents' actual three-point and free-throw shooting for league-average shooting on the same attempts. Above the diagonal: luck has helped."),
+    mk("Transition offense", "How often they run against how well they score when they do", (t, a) => a.transition?.off ? { x: 100 * a.transition.off.share, y: a.transition.off.ppp_tr, rows: [["Transition share", p1(100 * a.transition.off.share)], ["Pts / transition poss.", f2(a.transition.off.ppp_tr)], ["Pts / half-court poss.", f2(a.transition.off.ppp_hc)]] } : null,
+      { xl: "Share of possessions in transition", yl: "Points per transition possession", fx: p0, fy: f2, quad: ["🎯 Pick their spots", "🏃 Run often and score", "🐢 Half-court team", "💨 Run a lot, don't cash in"] }, "Transition: shots and fouls in the first 8 seconds after a defensive rebound, steal or (for long outlets) a make."),
+    mk("Transition defense", "How often opponents run on them against how well they score when they do", (t, a) => a.transition?.def ? { x: 100 * a.transition.def.share, y: a.transition.def.ppp_tr, rows: [["Opp. transition share", p1(100 * a.transition.def.share)], ["Opp. pts / transition poss.", f2(a.transition.def.ppp_tr)]] } : null,
+      { xl: "Opponent transition share (fewer →)", yl: "Opponent pts per transition poss. (fewer ↑)", revX: true, revY: true, fx: p0, fy: f2, quad: ["🧯 Allow runouts, recover", "🛑 Shut down the break", "🚨 Burned in transition", "🎯 Rarely run on, hurt when they are"] }),
+    mk("Half-court vs. transition scoring", "Points per possession in the half court and on the break", (t, a) => a.transition?.off ? { x: a.transition.off.ppp_hc, y: a.transition.off.ppp_tr, rows: [["Half-court pts / poss.", f2(a.transition.off.ppp_hc)], ["Transition pts / poss.", f2(a.transition.off.ppp_tr)]] } : null,
+      { xl: "Points per half-court possession", yl: "Points per transition possession", fx: f2, fy: f2, quad: ["🏃 Need the break", "⭐ Score every way", "🧊 Struggle to score", "🧠 Half-court operators"] }),
+    mk("Offensive rebounding by miss type", "Offensive rebound rate on missed rim shots and on missed threes", (t, a) => a.rebounding?.off?.rim ? { x: 100 * a.rebounding.off.rim[1], y: 100 * a.rebounding.off.three[1], rows: [["OREB% on rim misses", p1(100 * a.rebounding.off.rim[1])], ["OREB% on missed threes", p1(100 * a.rebounding.off.three[1])], ["All misses", p1(100 * a.rebounding.off.all[1])]] } : null,
+      { xl: "OREB% on missed rim shots", yl: "OREB% on missed threes", fx: p0, fy: p0, quad: ["🏹 Chase long rebounds", "💪 Crash everything", "🔙 Get back on defense", "🧱 Clean up at the rim"] }),
+    mk("Clutch", "Overall net rating against net rating in the clutch (last 5 minutes, score within 5)", (t, a) => a.situations?.clutch?.poss >= 15 ? { x: a.situations.net, y: a.situations.clutch.ortg - a.situations.clutch.drtg, rows: [["Net rating", s1(a.situations.net)], ["Clutch net", s1(a.situations.clutch.ortg - a.situations.clutch.drtg)], ["Clutch possessions", a.situations.clutch.poss]] } : null,
+      { xl: "Net rating, all minutes", yl: "Clutch net rating", fx: s1, fy: s1, quad: ["🧊 Close games out", "🏆 Good and close out", "🥶 Struggle all game", "😬 Can't close"] }, "Clutch samples are small and clutch results barely carry over from one stretch to the next, so read this as what has happened, not a skill."),
+  ];
+  return { basic, deep };
+}
+
+// ---------- players ----------
+function quadPlayers(season, kind) {
+  const logs = S.logs[season] ?? [];
+  const agg = aggregate(logs);
+  const maxGp = Math.max(0, ...agg.map((a) => a.gp));
+  if (QD.minGp == null || QD.minGp > maxGp) QD.minGp = Math.max(1, Math.min(20, Math.floor(maxGp * 0.4)));
+  const posOk = (pid) => !QD.pos || (S.players[pid]?.pos ?? "") === QD.pos;
+  const keep = agg.filter((a) => a.gp >= QD.minGp && a.min / a.gp >= QD.minMin && posOk(a.player_id));
+  const by = new Map(keep.map((a) => [a.player_id, a]));
+  const name = (pid) => S.players[pid]?.name ?? String(pid);
+  const head = (a) => `<b>${esc(name(a.player_id))}</b> <span>${esc(abbr(a.team_id))} · ${a.gp} G · ${fmt(a.min / a.gp, 1)} MPG</span>`;
+  const p36 = (a, k) => a.min ? a[k] * 36 / a.min : null;
+  const mk = (key, sub, list, f, opts, note) => {
+    const pts = list.map((a) => { const r = f(a); if (!r) return null; return { id: a.player_id, n: name(a.player_id), tm: a.team_id, x: r.x, y: r.y, tip: head(a) + r.rows.map(([l, v]) => qRow(l, v)).join("") }; }).filter(Boolean);
+    return qCard(key, sub, qChart({ ...opts, pts, key }), note);
+  };
+  const PR = new Map((S.pratings[season]?.players ?? []).map((r) => [r.player_id, r]));
+  const st = (pid, k) => PR.get(pid)?.stats?.[k]?.[0];
+  const basic = [
+    mk("Usage vs. efficiency", "Share of team plays used on the floor against true shooting", keep, (a) => a.usg != null && a.ts != null ? { x: 100 * a.usg, y: 100 * a.ts, rows: [["Usage", p1(100 * a.usg)], ["True shooting", p1(100 * a.ts)], ["Points / game", f1(a.pts / a.gp)]] } : null,
+      { xl: "Usage rate", yl: "True shooting %", fx: p0, fy: p0, quad: ["🎯 Efficient role player", "⭐ Efficient star", "🪵 Low usage, inefficient", "🔫 Volume shooter"] }),
+    mk("Minutes vs. production", "Minutes per game against points + rebounds + assists per 36", keep, (a) => ({ x: a.min / a.gp, y: p36(a, "pra"), rows: [["Minutes / game", f1(a.min / a.gp)], ["PRA per 36", f1(p36(a, "pra"))], ["PRA / game", f1(a.pra / a.gp)]] }),
+      { xl: "Minutes per game", yl: "Pts + reb + ast per 36", fx: f0, fy: f0, quad: ["🚀 Productive in limited minutes", "⭐ Stars", "🪑 Depth role", "🛡️ Minutes for other reasons"] }, "Top-left: if their minutes go up (injury, trade, rotation change) their stat lines should jump."),
+    mk("Scorer or playmaker", "Points and assists per 36 minutes", keep, (a) => ({ x: p36(a, "pts"), y: p36(a, "ast"), rows: [["Points per 36", f1(p36(a, "pts"))], ["Assists per 36", f1(p36(a, "ast"))], ["Assist %", p1(100 * (a.ast_pct ?? NaN))]] }),
+      { xl: "Points per 36", yl: "Assists per 36", fx: f0, fy: f0, quad: ["🧠 Pass-first", "🌟 Do-it-all", "🔧 Role player", "🔫 Scorer first"] }),
+    mk("Three-point shooting", "Threes attempted per 36 against 3P% (at least 1 attempt a game)", keep.filter((a) => a.fg3a >= a.gp), (a) => ({ x: p36(a, "fg3a"), y: 100 * a.fg3_pct, rows: [["3PA per 36", f1(p36(a, "fg3a"))], ["3P%", `${p1(100 * a.fg3_pct)} (${a.fg3m}/${a.fg3a})`], ["Threes / game", f1(a.fg3m / a.gp)]] }),
+      { xl: "Three-point attempts per 36", yl: "Three-point %", fx: f0, fy: p0, quad: ["🎯 Accurate, few attempts", "🔥 Volume and accuracy", "🚫 Not a shooter", "🎰 Volume over accuracy"] }, "3P% is very noisy until a player has a few hundred attempts; volume is the steadier number for threes props."),
+    mk("Rebounding", "Share of available offensive and defensive rebounds grabbed on the floor", keep, (a) => a.oreb_pct != null && a.dreb_pct != null ? { x: 100 * a.oreb_pct, y: 100 * a.dreb_pct, rows: [["OREB%", p1(100 * a.oreb_pct)], ["DREB%", p1(100 * a.dreb_pct)], ["Rebounds / game", f1(a.reb / a.gp)]] } : null,
+      { xl: "Offensive rebound %", yl: "Defensive rebound %", fx: p0, fy: p0, quad: ["🛡️ Defensive rebounder", "💪 Glass eater", "🏃 Perimeter player", "🔁 Offensive crasher"] }),
+    mk("Defense: rim vs. perimeter", "Blocks per 100 opponent rim shots against steals per 100 opponent possessions (model estimates)", keep, (a) => qfin(st(a.player_id, "rim_prot")) && qfin(st(a.player_id, "steals")) ? { x: st(a.player_id, "steals"), y: st(a.player_id, "rim_prot"), rows: [["Steals / 100 opp. poss.", f1(st(a.player_id, "steals"))], ["Blocks / 100 opp. rim shots", f1(st(a.player_id, "rim_prot"))]] } : null,
+      { xl: "Steals per 100 opponent possessions", yl: "Blocks per 100 opponent rim shots", fx: f1, fy: f0, quad: ["🧱 Rim protector", "🦾 Disrupts everywhere", "😐 Quiet on defense", "🎣 Pickpocket"] }),
+    mk("Two-way impact", "Model ratings: points per 100 possessions added on offense and on defense", keep, (a) => { const r = PR.get(a.player_id); return r?.offense && r?.defense ? { x: r.offense.value, y: r.defense.value, rows: [["Offense", `${s1(r.offense.value)} (${f0(r.offense.pct)} pctile)`], ["Defense", `${s1(r.defense.value)} (${f0(r.defense.pct)} pctile)`], ["Overall", s1(r.overall?.value)]] } : null; },
+      { xl: "Offensive rating (pts / 100 added)", yl: "Defensive rating (pts / 100 saved)", avgX: 0, avgY: 0, fx: s1, fy: s1, quad: ["🛡️ Defensive specialist", "🌟 Two-way", "📉 Below average both ends", "🔥 Offense-first"] }, "These are the same ratings the game model uses: plus-minus with a box-score prior and last season blended in."),
+  ];
+  const P = LAB.pdata[season]?.players ?? {};
+  const has = (pid) => P[pid];
+  const lab = keep.filter((a) => has(a.player_id));
+  const minFga = QD.minFga ?? Math.max(30, Math.round(maxGp * 6));
+  const shooters = lab.filter((a) => (P[a.player_id].shooting?.fga ?? 0) >= minFga);
+  const sh = (a) => P[a.player_id].shooting;
+  const apmMin = Math.min(500, Math.max(100, maxGp * 30));
+  const deep = !Object.keys(P).length ? [] : [
+    mk("Shot quality vs. shot-making", `Expected eFG% of a player's shots against how much better or worse he makes them (${minFga}+ shots)`, shooters, (a) => ({ x: 100 * sh(a).xefg, y: 100 * sh(a).making, rows: [["Shot quality (xeFG%)", p1(100 * sh(a).xefg)], ["Actual eFG%", p1(100 * sh(a).efg)], ["Shot-making", `${s1(100 * sh(a).making)} ± ${f1(100 * 2 * (sh(a).making_se ?? 0))}`], ["Shots", sh(a).fga]] }),
+      { xl: "Shot quality (expected eFG%)", yl: "Shot-making (eFG% above expected)", avgY: 0, fx: p0, fy: s1, labelN: 12, quad: ["🎯 Tough-shot makers", "⭐ Great looks, cashing in", "🧱 Tough shots, missing", "📈 Good looks, missing (due)"] }, "Stars live top-left: they take hard shots and still beat the model. Bottom-right players are getting good looks and missing; that usually turns around."),
+    mk("Self-creation vs. shot-making", `Share of made shots that were unassisted against shot-making (${minFga}+ shots)`, shooters.filter((a) => sh(a).assisted != null), (a) => ({ x: 100 * (1 - sh(a).assisted), y: 100 * sh(a).making, rows: [["Unassisted makes", p1(100 * (1 - sh(a).assisted))], ["Shot-making", s1(100 * sh(a).making)], ["eFG%", p1(100 * sh(a).efg)]] }),
+      { xl: "Unassisted share of makes", yl: "Shot-making (eFG% above expected)", avgY: 0, fx: p0, fy: s1, quad: ["🎯 Finishers off passes", "⭐ Self-creating shot-makers", "🔧 Needs set-up, missing", "😓 Creating their own, struggling"] }),
+    mk("Shot diet: transition vs. late clock", `Share of shots in transition and with under 4 seconds on the shot clock (${minFga}+ shots)`, shooters.filter((a) => sh(a).transition_share != null && sh(a).late_clock_share != null), (a) => ({ x: 100 * sh(a).transition_share, y: 100 * sh(a).late_clock_share, rows: [["Transition shots", p1(100 * sh(a).transition_share)], ["Late-clock shots", p1(100 * sh(a).late_clock_share)], ["Shot quality", p1(100 * sh(a).xefg)]] }),
+      { xl: "Share of shots in transition", yl: "Share of shots late in the clock", fx: p0, fy: p0, quad: ["⏱️ Shot-clock bailout", "🔀 Early and late", "🧠 Half-court rhythm", "🏃 Runner"] }, "Late-clock shots are harder; a player who takes a lot of them is often the team's bailout option. Runners score more against fast, sloppy teams."),
+    mk("Plus-minus: offense vs. defense", `Regularized plus-minus from the play log, points per 100 possessions (${apmMin}+ possessions)`, lab.filter((a) => P[a.player_id].apm?.poss >= apmMin), (a) => { const m = P[a.player_id].apm; return { x: m.o, y: m.d, rows: [["Offense", `${s1(m.o)} ± ${f1(m.o_moe)}`], ["Defense", `${s1(m.d)} ± ${f1(m.d_moe)}`], ["Net", `${s1(m.net)} ± ${f1(m.net_moe)}`], ["Possessions", m.poss]] }; },
+      { xl: "Offensive plus-minus", yl: "Defensive plus-minus", avgX: 0, avgY: 0, fx: s1, fy: s1, quad: ["🛡️ Defensive anchor", "🌟 Team gets better on both ends", "📉 Team worse on both ends", "🔥 Offensive engine"] }, "Pure plus-minus with no box score prior: it only knows who was on the floor and the score. The margins of error (in the hover) are wide, especially early in a season."),
+    mk("Scoring: average vs. swing", "Points per game against game-to-game swing (standard deviation as % of average)", lab.filter((a) => P[a.player_id].consistency?.games >= 8 && P[a.player_id].consistency?.pts?.mean >= 5), (a) => { const c = P[a.player_id].consistency; return { x: c.pts.mean, y: 100 * c.pts.sd / c.pts.mean, rows: [["Points / game", f1(c.pts.mean)], ["Std. dev.", f1(c.pts.sd)], ["Middle 80%", `${f0(c.pts.q?.[0])}–${f0(c.pts.q?.[4])}`], ["Games (since)", `${c.games} (${c.from})`]] }; },
+      { xl: "Points per game", yl: "Swing, % of average (steadier ↑)", revY: true, fx: f0, fy: p0, quad: ["🧘 Steady, low scorer", "🔒 Reliable scorers", "🎲 Low and volatile", "🎢 Big scorers, boom or bust"] }, "For props: steady players' lines are easier to price; boom-or-bust players' overs and unders land far from the line either way."),
+    mk("Blowout risk", "Minutes in close games against how many fewer they play in lopsided ones", lab.filter((a) => P[a.player_id].close?.close && P[a.player_id].close?.lopsided), (a) => { const c = P[a.player_id].close; return { x: c.close.min, y: c.lopsided.min - c.close.min, rows: [["Minutes, close games", `${f1(c.close.min)} (${c.close.games} G)`], ["Minutes, lopsided games", `${f1(c.lopsided.min)} (${c.lopsided.games} G)`], ["Points per 36, close / lopsided", `${f1(c.close.pts)} / ${f1(c.lopsided.pts)}`]] }; },
+      { xl: "Minutes per game in close games (final margin ≤ 5)", yl: "Minutes change in lopsided games (≥ 15)", avgY: 0, fx: f0, fy: s1, quad: ["📈 Bench player, gets blowout run", "🛡️ Plays through blowouts", "🪑 Bench player, sits more", "⚠️ Starter who sits in blowouts"] }, "Bottom-right is the prop risk: big minutes in close games but a short night when the game gets out of hand. Check the spread before betting their overs."),
+    mk("Clutch shooting", "Shots per 36 in the clutch against clutch FG% (8+ clutch shots)", lab.filter((a) => P[a.player_id].situations?.clutch?.fg?.[1] >= 8), (a) => { const c = P[a.player_id].situations.clutch; return { x: c.fga, y: 100 * c.fg[0] / c.fg[1], rows: [["Clutch FGA per 36", f1(c.fga)], ["Clutch FG", `${c.fg[0]}/${c.fg[1]} (${p0(100 * c.fg[0] / c.fg[1])})`], ["Clutch minutes", f0(c.min)]] }; },
+      { xl: "Clutch shots per 36", yl: "Clutch FG%", fx: f0, fy: p0, quad: ["🎯 Efficient when called on", "🧊 Takes and makes the big shots", "🫥 Stays out of it", "😬 Takes them, misses them"] }, "Clutch: last 5 minutes of the 4th or overtime with the score within 5. Small samples."),
+  ];
+  return { basic, deep, maxGp, minFga };
+}
+
+function qSeasons() { return Object.keys(S.meta?.seasons ?? {}).sort().reverse(); }
+async function renderQuads() {
+  const body = $("#qd-body");
+  const seasons = qSeasons();
+  if (!QD.season) {   // the current season once teams have ~10 games, otherwise last season
+    QD.season = S.meta.season;
+    await loadSeasonFiles(QD.season);
+    const g = S.ratings[QD.season]?.teams?.map((t) => t.games) ?? [];
+    if (qMean(g) < 10 && seasons.includes(S.meta.previous_season)) QD.season = S.meta.previous_season;
+  }
+  const season = QD.season;
+  body.innerHTML = `<p class="pr-note">Loading…</p>`;
+  const jobs = [loadSeasonFiles(season), loadLab(season)];
+  if (S.pratings[season] === undefined) jobs.push(getJSON(`players/ratings_${season}.json`).then((d) => { S.pratings[season] = d; }, () => { S.pratings[season] = null; }));
+  await Promise.all(jobs);
+  if (season !== QD.season) return;
+  const T = quadTeams(season), P = quadPlayers(season);
+  const teams = (S.ratings[season]?.teams ?? []).map((t) => t.team_id).sort((a, b) => abbr(a).localeCompare(abbr(b)));
+  const gpAvg = qMean((S.ratings[season]?.teams ?? []).map((t) => t.games));
+  const seg = (id, cur, opts) => `<div class="seg" role="group" id="${id}">${opts.map(([v, l]) => `<button data-v="${v}" aria-pressed="${cur === v}">${l}</button>`).join("")}</div>`;
+  const pl = QD.who !== "teams";
+  const names = pl ? aggregate(S.logs[season] ?? []).filter((a) => a.gp >= QD.minGp && a.min / a.gp >= QD.minMin).map((a) => [a.player_id, S.players[a.player_id]?.name ?? a.player_id]).sort((a, b) => String(a[1]).localeCompare(String(b[1]))) : [];
+  const ctl = `<div class="controls">
+    <label class="ctl">Season<select id="qd-season">${seasons.map((s) => `<option ${s === season ? "selected" : ""}>${s}</option>`).join("")}</select></label>
+    <label class="ctl">Show${seg("qd-who", QD.who, [["all", "All"], ["teams", "Teams"], ["players", "Players"]])}</label>
+    <label class="ctl">Charts${seg("qd-kind", QD.kind, [["all", "All"], ["basic", "Basic"], ["deep", "Analytical"]])}</label>
+    <label class="ctl">Highlight team<select id="qd-team"><option value="">None</option>${teams.map((t) => `<option value="${t}" ${String(t) === QD.team ? "selected" : ""}>${esc(abbr(t))}</option>`).join("")}</select></label>
+    ${pl ? `<label class="ctl">Find player<select id="qd-find"><option value="">None</option>${names.map(([id, n]) => `<option value="${id}" ${String(id) === QD.find ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>
+    <label class="ctl">Position<select id="qd-pos"><option value="">All</option>${[["G", "Guards"], ["F", "Forwards"], ["C", "Centers"]].map(([v, l]) => `<option value="${v}" ${QD.pos === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+    <label class="ctl">Min MPG<input id="qd-min" type="number" min="0" max="40" value="${QD.minMin}"></label>
+    <label class="ctl">Min games<input id="qd-gp" type="number" min="1" value="${QD.minGp}"></label>` : ""}
+  </div>`;
+  const grid = (title, list) => { list = list.filter(Boolean); return list.length ? `<h3 class="qsec">${title}</h3><div class="qgrid">${list.join("")}</div>` : ""; };
+  const wantB = QD.kind !== "deep", wantD = QD.kind !== "basic";
+  let html = "";
+  if (QD.who !== "players") html += (wantB ? grid("Teams: the basics", T.basic) : "") + (wantD ? grid("Teams: analytical", T.deep.length ? T.deep : [`<p class="pr-note">Play-by-play analytics for ${esc(season)} aren't built yet.</p>`]) : "");
+  if (QD.who !== "teams") html += (wantB ? grid("Players: the basics", P.basic) : "") + (wantD ? grid("Players: analytical", P.deep.length ? P.deep : [`<p class="pr-note">Play-by-play analytics for ${esc(season)} aren't built yet.</p>`]) : "");
+  body.innerHTML = ctl + `<p class="pr-note" style="margin:0 0 12px">${esc(season)}: teams average ${fmt(gpAvg, 0)} games${gpAvg < 15 ? ", so expect a lot of noise this early" : ""}. Players shown: at least ${QD.minGp} games and ${QD.minMin} minutes a game.</p>` + html;
+  bindQuads();
+}
+function bindQuads() {
+  $("#qd-season").addEventListener("input", (e) => { QD.season = e.target.value; QD.zoom = {}; QD.find = ""; QD.minGp = null; renderQuads(); });
+  document.querySelectorAll("#qd-who button").forEach((b) => b.addEventListener("click", () => { QD.who = b.dataset.v; renderQuads(); }));
+  document.querySelectorAll("#qd-kind button").forEach((b) => b.addEventListener("click", () => { QD.kind = b.dataset.v; renderQuads(); }));
+  $("#qd-team").addEventListener("input", (e) => { QD.team = e.target.value; renderQuads(); });
+  $("#qd-find")?.addEventListener("input", (e) => { QD.find = e.target.value; renderQuads(); });
+  $("#qd-pos")?.addEventListener("input", (e) => { QD.pos = e.target.value; renderQuads(); });
+  $("#qd-min")?.addEventListener("change", (e) => { QD.minMin = Math.max(0, Number(e.target.value) || 0); renderQuads(); });
+  $("#qd-gp")?.addEventListener("change", (e) => { QD.minGp = Math.max(1, Number(e.target.value) || 1); renderQuads(); });
+}
+function initQuads() {
+  const body = $("#qd-body"), tip = $("#qtip");
+  const hide = () => { tip.hidden = true; };
+  body.addEventListener("mousemove", (e) => {
+    const g = e.target.closest("[data-tip]");
+    if (!g) return hide();
+    tip.innerHTML = g.getAttribute("data-tip"); tip.hidden = false;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    tip.style.left = Math.min(e.clientX + 14, innerWidth - w - 8) + "px";
+    tip.style.top = (e.clientY + 14 + h > innerHeight ? e.clientY - h - 10 : e.clientY + 14) + "px";
+  });
+  body.addEventListener("mouseleave", hide);
+  body.addEventListener("click", (e) => {
+    const out = e.target.closest("[data-qzout]"); if (out) { delete QD.zoom[out.dataset.qzout]; hide(); renderQuads(); return; }
+    const p = e.target.closest("[data-player]"); if (p) { hide(); openPlayer(Number(p.dataset.player)); return; }
+    const t = e.target.closest("[data-team]");
+    if (t) { hide(); const s = $("#t-season"); if ([...s.options].some((o) => o.value === QD.season)) s.value = QD.season; S.teamsView.team = Number(t.dataset.team); showView("teams"); renderTeams(); renderTeamDetail(); $("#team-detail")?.scrollIntoView({ block: "start" }); return; }
+    const z = e.target.closest(".qzone"); if (z) { QD.zoom[z.dataset.qz] = z.dataset.q; hide(); renderQuads(); }
+  });
+}
+
 // player page: analytics sections (from players/analytics_{season}.json and the team file for usage)
 const PROP_STAT = { pts: (r) => r.pts, reb: (r) => r.reb, ast: (r) => r.ast, fg3m: (r) => r.fg3m, pra: (r) => r.pts + r.reb + r.ast,
   pr: (r) => r.pts + r.reb, pa: (r) => r.pts + r.ast, ra: (r) => r.reb + r.ast };
@@ -3155,6 +3454,7 @@ function showView(name) {
   if (name === "lineups") renderLineupExplorer();
   if (name === "zones") renderZones();
   if (name === "lab") renderLab();
+  if (name === "quads") renderQuads();
   history.replaceState(null, "", "#" + name);
 }
 
@@ -3233,6 +3533,7 @@ async function init() {
   renderFreshness(); renderRail(); renderGames(); renderLeaders(); renderTeams(); renderPlayers();
   initLineups();
   initLab();
+  initQuads();
   initOverrides();
   initZones();
   initPlayerLinks();
@@ -3250,7 +3551,7 @@ async function init() {
   $("#fresh-toggle").addEventListener("click", (e) => { const p = $("#fresh-panel"); p.hidden = !p.hidden; e.currentTarget.setAttribute("aria-expanded", String(!p.hidden)); });
   window.addEventListener("resize", () => echarts?.getInstanceByDom($("#trend"))?.resize());
   const start = location.hash.slice(1);
-  if (["games", "bets", "props", "daily", "leaders", "teams", "lineups", "zones", "lab", "players", "model"].includes(start)) showView(start);
+  if (["games", "bets", "props", "daily", "leaders", "teams", "lineups", "zones", "lab", "quads", "players", "model"].includes(start)) showView(start);
 }
 init();
 </script>
