@@ -2052,7 +2052,7 @@ function renderBets() {
   const st = d.settings;
   const big = (b) => BV.size === "all" || b.units >= 1;
   document.querySelectorAll("#bt-size button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.size === BV.size)));
-  $("#bt-warn").innerHTML = `The model has no live track record yet, so every pick uses a chance halfway between the model's and the market's, and stakes are a quarter of the Kelly amount. Treat this as a test of the model, not proven advice: the ledger below and the "beat the closing line" rate are how you'll know whether it has an edge. Bet only what you can afford to lose. If gambling stops being fun, call or text 1-800-GAMBLER.`;
+  $("#bt-warn").innerHTML = `The model has no live track record yet, so every pick uses a chance that leans on the market: ${Math.round(100 * (st?.blend ?? 0.35))}% the model's, ${Math.round(100 * (1 - (st?.blend ?? 0.35)))}% the market's, and stakes are a quarter of the Kelly amount. Treat this as a test of the model, not proven advice: the ledger below and the "beat the closing line" rate are how you'll know whether it has an edge. Bet only what you can afford to lose. If gambling stops being fun, call or text 1-800-GAMBLER.`;
   const card = (k, v, s, cls = "") => `<div class="bt-card"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s}</div></div>`;
   const ledAll = fromCols(d.ledger);
   const pend = ovReconcile(ledAll);
