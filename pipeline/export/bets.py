@@ -9,8 +9,11 @@ Candidates
     simulation was replayed on last season (its RMSE), after removing that
     replay's average bias
 How much to trust the model
-  The model has no live record yet, so the chance used for a bet is the
-  average of the model's and the market's (BLEND). A bet needs:
+  The model has no live record yet, so the chance used for a bet is a
+  weighted average of the model's and the market's: BLEND model, the rest
+  market. It started at 0.5; after the first ~220 graded bets showed the
+  model running well above both the market and the results, it was cut to
+  0.35. A bet needs:
     * expected return of at least MIN_EV at the best legal price
     * the model rating the side at least MIN_GAP above the market, and not
       more than MAX_GAP above it (bigger gaps usually mean news the model
@@ -54,7 +57,7 @@ log = logging.getLogger(__name__)
 # locked from the last pull before tip-off, so their closing price is their own price (CLV exactly 0).
 BEAT_EPS = 5e-5
 
-BLEND = 0.5
+BLEND = 0.35             # share of the model in the chance used (was 0.5 until Nov 2, 2026)
 MIN_EV = 0.04
 MAX_GAP = 0.10
 MIN_GAP = 0.02
