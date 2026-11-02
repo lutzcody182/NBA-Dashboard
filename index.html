@@ -361,11 +361,18 @@ dialog.box::backdrop { background: rgba(5, 10, 16, 0.72); }
 .bt-game { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 14px; min-width: 0; }
 .bt-game h3 { margin: 0 0 6px; font: 700 17px var(--cond); display: flex; justify-content: space-between; gap: 8px; }
 .bt-game h3 small { color: var(--muted); font: 500 13px var(--body); }
-.bt-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 12px; padding: 7px 0; border-top: 1px solid var(--line); align-items: baseline; }
+.bt-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 4px 12px; padding: 7px 0; border-top: 1px solid var(--line); align-items: baseline; }
+.bt-row.placed { background: var(--good-bg); box-shadow: inset 3px 0 0 var(--good); padding-left: 8px; margin: 0 -8px; padding-right: 8px; }
+.placed-btn { align-self: center; width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--muted); background: transparent; color: transparent; font: 700 15px/1 var(--body); cursor: pointer; padding: 0; display: grid; place-items: center; }
+.placed-btn:hover { border-color: var(--good); color: var(--good); }
+.placed-btn.on { background: var(--good); border-color: var(--good); color: #0D1520; }
+.placed-btn:disabled { cursor: default; }
+.placed-tag { color: var(--good); font: 700 12px var(--body); white-space: nowrap; margin-left: 6px; }
+.placed-mark { color: var(--good); font-weight: 700; }
 .bt-row .what { font-weight: 600; }
 .bt-row .units { font: 700 18px var(--cond); color: var(--accent); }
 .bt-row .price { font-family: var(--cond); font-size: 15px; }
-.bt-row .why { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.bt-row .why { grid-column: 2 / -1; color: var(--muted); font-size: 12px; }
 .ov-btn { background: none; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; padding: 1px 7px; cursor: pointer; white-space: nowrap; }
 .ov-btn:hover, .ov-btn:focus-visible { color: var(--text); border-color: var(--accent); }
 .ov-mine { color: var(--accent); font-weight: 600; } .ov-pend { color: var(--muted); font-style: italic; font-size: 12px; }
@@ -503,7 +510,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
   <!-- Bets -->
   <section class="view" id="view-bets" hidden>
     <h2>Recommended bets</h2>
-    <p class="sub">Bets where the model and the market disagree enough to pay at the best price at a state-licensed US sportsbook, sized in units (1 unit = 1% of your bankroll). The page rebuilds every 15 minutes on game days with the latest injury news, and odds are pulled about every 75 to 90 minutes from late morning until tip-off. Each pick is locked the first time it qualifies on fresh prices, at that price and book, and every pick is graded after the game. Lines move: check the price at your book before betting.</p>
+    <p class="sub">Bets where the model and the market disagree enough to pay at the best price at a state-licensed US sportsbook, sized in units (1 unit = 1% of your bankroll). The page rebuilds every 15 minutes on game days with the latest injury news, and odds are pulled about every 75 to 90 minutes from late morning until tip-off. Each pick is locked the first time it qualifies on fresh prices, at that price and book, and every pick is graded after the game. Lines move: check the price at your book before betting. Tap the circle next to a pick once you have placed it: it turns into a green check, so you never bet the same pick twice. Your marks are saved in this browser, and any bet where you recorded the odds you got counts as placed on every device.</p>
     <div class="bt-warn" id="bt-warn"></div>
     <div class="controls"><div class="seg" role="group" aria-label="Which bets" id="bt-size">
       <button data-size="1u" aria-pressed="true">Bets of 1+ units</button><button data-size="all" aria-pressed="false">All bets</button>
@@ -1977,6 +1984,37 @@ function initOverrides() {
   document.addEventListener("click", (e) => { const t = e.target.closest?.("[data-ov]"); if (t) { e.preventDefault(); openOverride(+t.dataset.ov); } });
 }
 
+// ---------- bets you've placed (saved in this browser; a bet whose odds you recorded counts as placed everywhere) ----------
+const PLACED = (() => { try { return JSON.parse(localStorage.getItem("betsPlaced") || "{}") || {}; } catch (_) { return {}; } })();
+const placedKey = (b) => [b.game_id, b.kind, b.player_id ?? "", b.stat ?? "", b.side].join("|");
+const placedByOdds = (b, pend) => { const p = pend?.[b.bet_id]; return p ? !p.clear : b.taken_price != null; };
+const isPlaced = (b, pend) => !!PLACED[placedKey(b)] || placedByOdds(b, pend);
+function setPlaced(key, on) {
+  if (on) PLACED[key] = Date.now(); else delete PLACED[key];
+  const old = Date.now() - 60 * 864e5;           // forget marks after 60 days
+  for (const [k, t] of Object.entries(PLACED)) if (t < old) delete PLACED[k];
+  try { localStorage.setItem("betsPlaced", JSON.stringify(PLACED)); } catch (_) { /* private window: kept until the page closes */ }
+}
+function placedBtn(b, pend) {
+  const on = isPlaced(b, pend), locked = on && !PLACED[placedKey(b)];
+  const tip = locked ? "Bet placed: you recorded the odds you got for this bet" : on ? "Bet placed. Click to mark as not placed" : "Not placed. Click to mark this bet as placed";
+  return `<button type="button" class="placed-btn${on ? " on" : ""}" data-placed="${esc(placedKey(b))}" aria-pressed="${on}" aria-label="${on ? "Bet placed" : "Not placed"}" title="${tip}"${locked ? " disabled" : ""}>✓</button>`;
+}
+function initPlaced() {
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest?.("[data-placed]"); if (!t || t.disabled) return;
+    setPlaced(t.dataset.placed, t.getAttribute("aria-pressed") !== "true");
+    renderBets();
+  });
+  // another tab of the dashboard changed the marks: pick them up
+  window.addEventListener("storage", (e) => {
+    if (e.key !== "betsPlaced") return;
+    let fresh = {}; try { fresh = JSON.parse(e.newValue || "{}") || {}; } catch (_) {}
+    for (const k of Object.keys(PLACED)) delete PLACED[k];
+    Object.assign(PLACED, fresh); renderBets();
+  });
+}
+
 // ---------- bet tracker: which bets, and results by period ----------
 const BET_PERIODS = [["yesterday", "Yesterday"], ["7", "Last 7 days"], ["14", "Last 14 days"], ["30", "Last month"], ["season", "Season"]];
 const BV = (() => { try { return { size: localStorage.getItem("betSize") || "1u" }; } catch (_) { return { size: "1u" }; } })();
@@ -2043,13 +2081,14 @@ function renderBets() {
   const byGame = new Map();
   for (const b of upcoming) { if (!byGame.has(b.game_id)) byGame.set(b.game_id, []); byGame.get(b.game_id).push(b); }
   const games = [...byGame.entries()].sort((a, b) => (a[1][0].tip_utc ?? "").localeCompare(b[1][0].tip_utc ?? ""));
-  $("#bt-today-title").innerHTML = `Picks for upcoming games (${upcoming.length} bets, ${fmt(upcoming.reduce((a, b) => a + b.units, 0), 2)} units) <small style="color:var(--muted);font:500 13px var(--body)">· prices as of ${d.odds_as_of ? fmtStamp(d.odds_as_of) : "—"}${d.next_pull ? ` · odds: ${esc(d.next_pull)}` : ""} · page rebuilt ${fmtStamp(d.generated_at)}</small>`;
+  const upPl = upcoming.filter((b) => isPlaced(b, pend));
+  $("#bt-today-title").innerHTML = `Picks for upcoming games (${upcoming.length} bets, ${fmt(upcoming.reduce((a, b) => a + b.units, 0), 2)} units${upcoming.length ? `; <span class="placed-mark">${upPl.length} placed</span>, ${upcoming.length - upPl.length} not placed` : ""}) <small style="color:var(--muted);font:500 13px var(--body)">· prices as of ${d.odds_as_of ? fmtStamp(d.odds_as_of) : "—"}${d.next_pull ? ` · odds: ${esc(d.next_pull)}` : ""} · page rebuilt ${fmtStamp(d.generated_at)}</small>`;
   $("#bt-games").innerHTML = games.length ? games.map(([gid, bs]) => {
-    const g = bs[0], tot = bs.reduce((a, b) => a + b.units, 0);
-    const rows = bs.sort((a, b) => b.ev - a.ev).map((b) => `<div class="bt-row"><span class="what">${betLabel(b)}</span>
+    const g = bs[0], tot = bs.reduce((a, b) => a + b.units, 0), nPl = bs.filter((b) => isPlaced(b, pend)).length;
+    const rows = bs.sort((a, b) => b.ev - a.ev).map((b) => { const on = isPlaced(b, pend); return `<div class="bt-row${on ? " placed" : ""}">${placedBtn(b, pend)}<span class="what">${betLabel(b)}${on ? `<span class="placed-tag">✓ Bet placed</span>` : ""}</span>
       <span class="price">${priceCell(b, pend)}</span><span class="units">${fmt(b.units, 2)}u</span>
-      ${liveBetLine(b)}<span class="why">Model ${pct(b.p_model)}%, market ${pct(b.p_market)}%, used ${pct(b.p_used)}%; expected return ${signed(100 * b.ev, 1)}% · ${b.status === "live" ? `<span style="color:var(--accent)">Qualifies now, not locked yet</span> (prices from ${fmtStamp(b.created_at)}; it locks when fresh prices still show it)` : `${betResultCell(b)} · locked ${fmtStamp(b.created_at)} ${ovButton(b)}`}</span></div>`).join("");
-    return `<div class="bt-game"><h3><span>${abbr(g.away_team_id)} @ ${abbr(g.home_team_id)}</span><small>${fmtTime(g.tip_utc)} · ${fmt(tot, 2)} units</small></h3>${rows}</div>`;
+      ${liveBetLine(b)}<span class="why">Model ${pct(b.p_model)}%, market ${pct(b.p_market)}%, used ${pct(b.p_used)}%; expected return ${signed(100 * b.ev, 1)}% · ${b.status === "live" ? `<span style="color:var(--accent)">Qualifies now, not locked yet</span> (prices from ${fmtStamp(b.created_at)}; it locks when fresh prices still show it)` : `${betResultCell(b)} · locked ${fmtStamp(b.created_at)} ${ovButton(b)}`}</span></div>`; }).join("");
+    return `<div class="bt-game"><h3><span>${abbr(g.away_team_id)} @ ${abbr(g.home_team_id)}</span><small>${fmtTime(g.tip_utc)} · ${fmt(tot, 2)} units${nPl ? ` · <span class="placed-mark">✓ ${nPl} of ${bs.length} placed</span>` : ""}</small></h3>${rows}</div>`;
   }).join("") : `<div class="empty">No picks qualify at the latest prices${d.odds_as_of ? ` (${fmtStamp(d.odds_as_of)})` : ""}. Odds are pulled about every 75 to 90 minutes on game days, starting late morning.</div>`;
   // ledger
   $("#bt-periods").innerHTML = `<thead><tr><th class="l">Period</th>${SUMMARY_HEAD}</tr></thead><tbody>${BET_PERIODS.map(([p, label]) => {
@@ -2059,7 +2098,7 @@ function renderBets() {
   const mkt = (b) => b.kind === "prop" ? b.stat : b.kind;
   const rows = led.filter((b) => (!kind || b.kind === kind || mkt(b) === kind) && (!status || b.status === status) && inPeriod(b, period));
   const head = `<thead><tr><th class="l">Date</th><th class="l">Bet</th><th class="l">Type</th><th class="l" title="Your odds when you recorded different ones; otherwise the recommended odds and book">Odds and book</th><th>Units</th><th>Model</th><th>Market</th><th>Exp. return</th><th class="l">Result</th><th>Actual</th><th>P/L</th><th title="Market's fair chance for this side at the last pull before tip-off, minus when the bet was made">Closing line</th></tr></thead>`;
-  const body = rows.map((b) => `<tr><td class="l">${fmtDay(b.game_date)}</td><td class="l">${betLabel(b)}</td><td class="l">${esc(MARKET_LABEL[mkt(b)] ?? b.kind)}</td>
+  const body = rows.map((b) => `<tr><td class="l">${fmtDay(b.game_date)}</td><td class="l">${betLabel(b)}${isPlaced(b, pend) ? ` <span class="placed-mark" title="You marked this bet as placed">✓</span>` : ""}</td><td class="l">${esc(MARKET_LABEL[mkt(b)] ?? b.kind)}</td>
     <td class="l">${priceCell(b, pend)}<br>${ovButton(b)}</td><td>${fmt(b.units, 2)}</td><td>${pct(b.p_model)}%</td><td>${pct(b.p_market)}%</td><td>${signed(100 * b.ev, 1)}%</td>
     <td class="l">${betResultCell(b)}</td><td>${b.result == null ? "—" : b.kind === "total" || b.kind === "prop" ? fmt(b.result, 0) : signed(b.result, 0)}</td>
     <td class="${b.pnl > 0 ? "res-won" : b.pnl < 0 ? "res-lost" : ""}">${b.pnl == null ? "—" : signed(b.pnl, 2)}</td><td>${b.clv == null ? "—" : Math.abs(100 * b.clv) < 0.05 ? "0.0" : signed(100 * b.clv, 1)}</td></tr>`).join("");
@@ -3533,6 +3572,7 @@ async function init() {
   renderFreshness(); renderRail(); renderGames(); renderLeaders(); renderTeams(); renderPlayers();
   initLineups();
   initLab();
+  initPlaced();
   initQuads();
   initOverrides();
   initZones();
