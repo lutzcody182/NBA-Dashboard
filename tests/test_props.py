@@ -130,3 +130,21 @@ def test_skewed_shape_matches_scaled_counts():
     assert po + pu == pytest.approx(1.0) and push == 0
     po2, pu2, push2 = PM.over_under(20.0, 0.6, sh, 34, 28, 39)
     assert po2 + pu2 + push2 == pytest.approx(1.0) and 0 < push2 < 0.2
+
+
+def test_anchor_inputs_pulls_minutes_and_rates_toward_history():
+    from pipeline.export import props as XP
+    x = {"min": 34.0, "p10": 28.0, "p90": 38.0, "rates": {s: 0.0 for s in XP.PM.STATS}, "status": None}
+    x["rates"].update({"pts": 0.60, "reb": 0.20, "ast": 0.10, "fg3m": 0.05})
+    hist = {7: {"m5": 26.0, "games": 12, "rate": {"pts": 0.40, "reb": 0.20, "ast": 0.10, "fg3m": 0.05}}}
+    out = XP.anchor_inputs({("g", 7): x, ("g", 8): x}, hist)
+    a = out[("g", 7)]
+    assert a["min"] == 30.0                       # halfway from 26 toward 34, inside the 4-minute cap
+    assert a["p10"] == 24.0 and a["p90"] == 34.0  # the range moves with it
+    assert abs(a["rates"]["pts"] - 0.57) < 1e-9   # 85% simulation, 15% longer record
+    assert abs(a["rates"]["pra"] - (0.57 + 0.20 + 0.10)) < 1e-9
+    assert out[("g", 8)] is x                     # no history: unchanged
+    far = XP.anchor_inputs({("g", 7): {**x, "min": 46.0}}, hist)[("g", 7)]
+    assert far["min"] == 30.0                     # capped at 4 minutes from the last-5 average
+    few = XP.anchor_inputs({("g", 7): x}, {7: {**hist[7], "games": 3}})[("g", 7)]
+    assert few is x                               # fewer than 5 games: not anchored
