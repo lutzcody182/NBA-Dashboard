@@ -27,7 +27,7 @@ def test_kelly_units_are_small_and_capped():
 
 
 def test_candidate_needs_model_on_its_side():
-    assert B._candidate("total", "g", "over", 220.5, -110, "fanduel", 0.60, 0.50, 0, 5) is not None
+    assert B._candidate("total", "g", "over", 220.5, 100, "fanduel", 0.60, 0.50, 0, 5) is not None   # 35% model: 53.5% at even money
     # cheap price but the model likes the other side: no bet
     assert B._candidate("total", "g", "over", 220.5, 150, "fanduel", 0.45, 0.50, 0, 5) is None
     # too big a gap: probably news the model hasn't seen
