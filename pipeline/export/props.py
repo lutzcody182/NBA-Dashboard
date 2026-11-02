@@ -8,7 +8,14 @@ Every run:
     chance of going over
   * computes the model's chance from the simulation's per-minute numbers,
     the minutes model's range for the player if he plays, and the fitted
-    spread of each stat (models.props)
+    spread of each stat (models.props), after anchoring both to the
+    player's own history (anchor_inputs): minutes are pulled halfway
+    toward his last 5 games and kept within MIN_CAP of them, and each
+    per-minute rate takes RATE_LONG of his rate over this season and last.
+    Graded props from the first ~4,000 lines of 2026-27 showed the
+    unanchored numbers drifting from the line on noise: where the model
+    liked an over most, it had players' minutes 2.6 too high and scoring
+    rates about 20% too high
   * when a pull happened, stores those comparisons in prop_evals, and grades
     every stored comparison whose game is final: the last one before tip-off
     for each player and stat, against the box score. Players who did not
@@ -30,6 +37,11 @@ from ..providers import odds_api as OA
 from ..util import utc_now_iso
 
 log = logging.getLogger(__name__)
+# anchoring the props inputs to each player's own record (see anchor_inputs)
+MIN_PULL = 0.5        # keep this share of the minutes model's difference from his last-5 average
+MIN_CAP = 4.0         # and never more than this many minutes away from it
+RATE_LONG = 0.15      # share of each per-minute rate taken from his rate over this season and last
+ANCHOR_MIN_GAMES = 5
 STAT_LABEL = {"pts": "Points", "reb": "Rebounds", "ast": "Assists", "fg3m": "Threes", "pra": "Pts+Reb+Ast",
               "pr": "Pts+Reb", "pa": "Pts+Ast", "ra": "Reb+Ast"}
 
@@ -189,6 +201,44 @@ def model_inputs(proj: dict, sims: dict) -> dict:
     return out
 
 
+def player_history(conn, season: str) -> dict:
+    """player_id -> {"m5": last-5 minutes, "games": n, "rate": {stat: per-minute rate}} from this season and last."""
+    from ..models.game_model import prev_season
+    df = pd.read_sql_query(
+        """SELECT s.player_id, g.game_date, s.seconds / 60.0 AS m, s.pts, s.oreb + s.dreb AS reb, s.ast, s.fg3m
+           FROM player_game_stats s JOIN games g ON g.game_id = s.game_id
+           WHERE g.season_id IN (?, ?) AND g.season_type = 'regular' AND g.status = 'final' AND s.seconds > 0""",
+        conn, params=[season, prev_season(season)])
+    if df.empty:
+        return {}
+    base = ("pts", "reb", "ast", "fg3m")
+    lg = {k: df[k].sum() / df["m"].sum() for k in base}
+    out = {}
+    for pid, h in df.sort_values("game_date").groupby("player_id"):
+        mins = h["m"].sum()
+        out[int(pid)] = {"m5": float(h["m"].tail(5).mean()), "games": int(len(h)),
+                         "rate": {k: float((h[k].sum() + PM.PRIOR_MIN * lg[k]) / (mins + PM.PRIOR_MIN)) for k in base}}
+    return out
+
+
+def anchor_inputs(inputs: dict, hist: dict) -> dict:
+    """Pull each player's minutes toward his last 5 games and his per-minute rates toward his longer record."""
+    out = {}
+    for key, x in inputs.items():
+        h = hist.get(key[1])
+        if not h or h["games"] < ANCHOR_MIN_GAMES:
+            out[key] = x
+            continue
+        m = h["m5"] + float(np.clip(MIN_PULL * (x["min"] - h["m5"]), -MIN_CAP, MIN_CAP))
+        m = float(np.clip(m, 1.0, 48.0))
+        shift = m - x["min"]
+        base = {k: (1 - RATE_LONG) * x["rates"][k] + RATE_LONG * h["rate"][k] for k in ("pts", "reb", "ast", "fg3m")}
+        rates = {s: sum(base[p] for p in parts) for s, parts in PM.STATS.items()}
+        out[key] = {**x, "min": m, "p10": min(x["p10"] + shift, m), "p90": max(x["p90"] + shift, m), "rates": rates,
+                    "model_min": x["min"]}
+    return out
+
+
 def compare(rows: list, inputs: dict, disp: dict) -> list:
     out = []
     for r in rows:
@@ -309,7 +359,12 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
         dbmod.mark_attempt(conn, "odds", False, "; ".join(pulled.get("errors", []))[:400])
     upcoming = [g["game_id"] for g in games]
     rows = market_table(_latest_odds(conn, upcoming))
-    rows = compare(rows, model_inputs(proj, sims), cal["shapes"])
+    try:
+        hist = player_history(conn, season)
+    except Exception:
+        log.exception("Player history for props failed; using the unanchored inputs")
+        hist = {}
+    rows = compare(rows, anchor_inputs(model_inputs(proj, sims), hist), cal["shapes"])
     if pulled["status"] == "stored":
         save_evals(conn, pulled["fetched_at"], rows)
     fetched = {r[0]: r[1] for r in conn.execute(
