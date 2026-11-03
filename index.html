@@ -369,6 +369,29 @@ dialog.box::backdrop { background: rgba(5, 10, 16, 0.72); }
 .placed-btn:disabled { cursor: default; }
 .placed-tag { color: var(--good); font: 700 12px var(--body); white-space: nowrap; margin-left: 6px; }
 .placed-mark { color: var(--good); font-weight: 700; }
+/* recommended bets log */
+.rsb { display: inline-block; font: 600 12px var(--body); padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); }
+.rsb.on { color: var(--good); border-color: rgba(63,185,163,.5); background: var(--good-bg); }
+.rsb.ex { color: var(--accent); border-color: rgba(224,123,57,.45); }
+.rsb.cl { color: var(--muted); }
+.rc-sub { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: normal; font-family: var(--body); }
+.rc-u { color: var(--good); }
+.rcseg { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.rcb { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--muted); font: 600 12px var(--body); padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+.rcb:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+.rcb:disabled { opacity: .45; cursor: default; }
+.rcb.on.placed { background: var(--good); border-color: var(--good); color: #0D1520; }
+.rcb.on.not { background: var(--bad-bg); border-color: rgba(226,96,79,.55); color: var(--bad); }
+.rcb.on.pending { background: var(--panel-2); color: var(--text); border-color: var(--muted); }
+table.rctab td { white-space: normal; vertical-align: top; font-family: var(--body); font-size: 13.5px; }
+table.rctab td:first-child { white-space: nowrap; color: var(--muted); font-size: 12.5px; }
+table.rctab thead th { cursor: default; }
+tr.rcneed td { background: rgba(224,123,57,.07); }
+tr.rcneed td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+tr.rcplaced td:first-child { box-shadow: inset 3px 0 0 var(--good); }
+.rc-warn { color: var(--accent); }
+.rc-banner { border-left: 3px solid var(--accent); background: var(--panel); padding: 8px 12px; margin: 0 0 14px; font-size: 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#rc-ask { width: min(1080px, calc(100vw - 32px)); }
 .bt-row .what { font-weight: 600; }
 .bt-row .units { font: 700 18px var(--cond); color: var(--accent); }
 .bt-row .price { font-family: var(--cond); font-size: 15px; }
@@ -456,6 +479,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
   <nav class="tabs" role="tablist" aria-label="Sections">
     <button class="tab" role="tab" data-view="games" aria-selected="true">Games</button>
     <button class="tab" role="tab" data-view="bets" aria-selected="false">Bets</button>
+    <button class="tab" role="tab" data-view="recs" aria-selected="false">Recommended Bets</button>
     <button class="tab" role="tab" data-view="props" aria-selected="false">Props</button>
     <button class="tab" role="tab" data-view="daily" aria-selected="false">Daily</button>
     <button class="tab" role="tab" data-view="leaders" aria-selected="false">Leaders</button>
@@ -481,12 +505,18 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
   <div class="box-head"><h2 id="ov-title">Odds you got</h2><button type="button" id="ov-close" aria-label="Close">×</button></div>
   <form class="box-body" id="ov-form" method="dialog"></form>
 </dialog>
+<dialog class="box" id="rc-ask" aria-labelledby="rc-ask-title">
+  <div class="box-head"><h2 id="rc-ask-title">Did you place these bets?</h2><button type="button" id="rc-ask-close" aria-label="Close">×</button></div>
+  <div class="box-body"><div id="rc-ask-body"></div>
+    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:10px"><span class="pr-note" id="rc-ask-left" style="margin:0"></span><button type="button" class="ov-btn" id="rc-ask-done">Done for now</button></div></div>
+</dialog>
 <dialog class="box" id="box-dialog" aria-labelledby="box-title">
   <div class="box-head"><h2 id="box-title">Box score</h2><span class="st" id="box-status"></span><button type="button" id="box-close" aria-label="Close box score">×</button></div>
   <div class="box-body" id="box-body"></div>
 </dialog>
 
 <main>
+  <div id="rc-banner"></div>
   <section class="panel" id="fresh-panel" hidden style="margin-bottom:18px">
     <h3>Data status</h3>
     <div id="fresh-detail"></div>
@@ -532,6 +562,13 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
       <div class="panel"><h3 id="bt-kinds-title">Results by bet type</h3><div id="bt-kinds"></div></div>
       <div class="panel"><h3>How picks and stakes are chosen</h3><div id="bt-rules"></div></div>
     </div>
+  </section>
+
+  <!-- Recommended bets log -->
+  <section class="view" id="view-recs" hidden>
+    <h2>Recommended bets</h2>
+    <p class="sub">Every bet the model recommends stays here for good, even after the price moves, the line changes or the model stops recommending it. Each one shows where it stands now: <b>Active now</b> while the latest prices still recommend it, <b>No longer recommended</b> with the reason and when, then <b>Game started</b> and its result. Mark each one <b>Bet placed</b>, <b>Not placed</b> or <b>Pending</b> any time; if you got different odds, use "Got different odds?" so it's graded at yours. Your answers are saved in this browser, and the circle checks on the Bets tab are the same answers.</p>
+    <div id="rc-body"></div>
   </section>
 
   <!-- Props -->
@@ -1984,19 +2021,24 @@ function initOverrides() {
   document.addEventListener("click", (e) => { const t = e.target.closest?.("[data-ov]"); if (t) { e.preventDefault(); openOverride(+t.dataset.ov); } });
 }
 
-// ---------- bets you've placed (saved in this browser; a bet whose odds you recorded counts as placed everywhere) ----------
+// ---------- your answer for each recommended bet (saved in this browser): placed, not placed, or still pending ----------
+// A bet whose odds you recorded ("Got different odds?") counts as placed on every device.
 const PLACED = (() => { try { return JSON.parse(localStorage.getItem("betsPlaced") || "{}") || {}; } catch (_) { return {}; } })();
 const placedKey = (b) => [b.game_id, b.kind, b.player_id ?? "", b.stat ?? "", b.side].join("|");
 const placedByOdds = (b, pend) => { const p = pend?.[b.bet_id]; return p ? !p.clear : b.taken_price != null; };
-const isPlaced = (b, pend) => !!PLACED[placedKey(b)] || placedByOdds(b, pend);
-function setPlaced(key, on) {
-  if (on) PLACED[key] = Date.now(); else delete PLACED[key];
-  const old = Date.now() - 60 * 864e5;           // forget marks after 60 days
-  for (const [k, t] of Object.entries(PLACED)) if (t < old) delete PLACED[k];
+const markOf = (key) => { const v = PLACED[key]; return typeof v === "number" ? "placed" : v?.s ?? "pending"; };   // older saves held only a time
+const markTime = (v) => typeof v === "number" ? v : v?.t ?? 0;
+const placeState = (b, pend) => placedByOdds(b, pend) ? "placed" : markOf(placedKey(b));
+const isPlaced = (b, pend) => placeState(b, pend) === "placed";
+function setMark(key, s) {
+  if (s === "pending") delete PLACED[key]; else PLACED[key] = { s, t: Date.now() };
+  const old = Date.now() - 200 * 864e5;          // forget answers after 200 days
+  for (const [k, v] of Object.entries(PLACED)) if (markTime(v) < old) delete PLACED[k];
   try { localStorage.setItem("betsPlaced", JSON.stringify(PLACED)); } catch (_) { /* private window: kept until the page closes */ }
 }
+const setPlaced = (key, on) => setMark(key, on ? "placed" : "pending");
 function placedBtn(b, pend) {
-  const on = isPlaced(b, pend), locked = on && !PLACED[placedKey(b)];
+  const on = isPlaced(b, pend), locked = on && placedByOdds(b, pend);
   const tip = locked ? "Bet placed: you recorded the odds you got for this bet" : on ? "Bet placed. Click to mark as not placed" : "Not placed. Click to mark this bet as placed";
   return `<button type="button" class="placed-btn${on ? " on" : ""}" data-placed="${esc(placedKey(b))}" aria-pressed="${on}" aria-label="${on ? "Bet placed" : "Not placed"}" title="${tip}"${locked ? " disabled" : ""}>✓</button>`;
 }
@@ -2004,15 +2046,161 @@ function initPlaced() {
   document.addEventListener("click", (e) => {
     const t = e.target.closest?.("[data-placed]"); if (!t || t.disabled) return;
     setPlaced(t.dataset.placed, t.getAttribute("aria-pressed") !== "true");
-    renderBets();
+    betViewsChanged();
   });
   // another tab of the dashboard changed the marks: pick them up
   window.addEventListener("storage", (e) => {
     if (e.key !== "betsPlaced") return;
     let fresh = {}; try { fresh = JSON.parse(e.newValue || "{}") || {}; } catch (_) {}
     for (const k of Object.keys(PLACED)) delete PLACED[k];
-    Object.assign(PLACED, fresh); renderBets();
+    Object.assign(PLACED, fresh); betViewsChanged();
   });
+}
+
+// ============================== RECOMMENDED BETS: every recommendation, where it stands, and "did you bet it?" ==============================
+// Every bet the model locks stays on the ledger for good. The GitHub job marks each one, every run, as still recommended
+// at the latest prices, no longer recommended (with the reason and when), or game started, and grades it after the game.
+// Your answer for each one (Bet placed / Not placed / Pending) is saved in this browser.
+const RC = { f: "", mk: "", all: false, asked: new Set(), seenKey: "recSeen" };
+const NEEDS_DAYS = 3;     // ended recommendations from the last 3 days ask for an answer; older ones just stay Pending
+function recState(b) {
+  const started = b.tip_utc && new Date(b.tip_utc) <= new Date();
+  if (b.status !== "open" || b.rec_state === "started" || started) return "started";
+  return b.rec_state === "expired" ? "expired" : "active";
+}
+function recRows() {
+  if (!S.bets) return [];
+  const big = (b) => BV.size === "all" || b.units >= 1;
+  return fromCols(S.bets.ledger).filter(big);
+}
+const recNeeds = (b, pend) => recState(b) !== "active" && placeState(b, pend) === "pending" && b.game_date >= etDate(-NEEDS_DAYS);
+function recStatusCell(b) {
+  const st = recState(b);
+  const badge = st === "active" ? `<span class="rsb on">Active now</span>`
+    : st === "expired" ? `<span class="rsb ex">No longer recommended</span><div class="rc-sub">${esc(b.end_reason ?? "the latest prices no longer qualify")}${b.ended_at ? ` · ${fmtStamp(b.ended_at)}` : ""}</div>`
+    : `<span class="rsb cl">Game started</span>`;
+  const actual = b.result == null ? "" : b.kind === "total" || b.kind === "prop" ? ` (${fmt(b.result, 0)})` : ` (${signed(b.result, 0)})`;
+  const res = b.status === "won" ? `<b class="res-won">✓ Won${actual} ${signed(b.pnl, 2)}u</b>` : b.status === "lost" ? `<span class="res-lost">✗ Lost${actual} ${signed(b.pnl, 2)}u</span>`
+    : b.status === "push" ? `<span class="res-push">Push${actual}</span>` : b.status === "void" ? `<span class="res-void">Void (didn't play)</span>` : "";
+  return badge + (res ? `<div>${res}</div>` : "");
+}
+function recPlaceCell(b, pend) {
+  const pl = placeState(b, pend), byOdds = placedByOdds(b, pend), key = esc(placedKey(b));
+  const btn = (s, l) => `<button type="button" class="rcb${pl === s ? " on " + s : ""}" data-rcset="${s}" data-rckey="${key}"${byOdds && s !== "placed" ? ` disabled title="You recorded the odds you got, so this counts as placed"` : ""}>${l}</button>`;
+  return `<div class="rcseg">${btn("placed", "✓ Bet placed")}${btn("not", "Not placed")}${btn("pending", "Pending")}</div>${pl === "placed" ? `<div style="margin-top:4px">${ovButton(b)}</div>` : ""}`;
+}
+function recRowHtml(b, pend) {
+  const st = recState(b), latest = st === "active" && b.now_price != null && (b.now_price !== b.price || b.now_book !== b.book || (b.now_units != null && b.now_units !== b.units))
+    ? `<div class="rc-sub">Latest ${odds(b.now_price)} ${esc(bookName(b.now_book))}${b.now_units != null ? ` · ${fmt(b.now_units, 2)}u` : ""}</div>` : "";
+  const mkt = b.kind === "prop" ? b.stat : b.kind;
+  return `<tr class="${recNeeds(b, pend) ? "rcneed" : ""}${isPlaced(b, pend) ? " rcplaced" : ""}"><td class="l">${fmtStamp(b.created_at)}</td>
+    <td class="l"><b>${betLabel(b)}</b><div class="rc-sub">${esc(MARKET_LABEL[mkt] ?? b.kind)} · ${abbr(b.away_team_id)} @ ${abbr(b.home_team_id)} · ${fmtDay(b.game_date)} ${fmtTime(b.tip_utc)}</div></td>
+    <td class="l">${priceCell(b, pend)}<div class="rc-sub"><b class="rc-u">${fmt(b.units, 2)}u</b> · expected return ${signed(100 * b.ev, 1)}%</div>${latest}</td>
+    <td class="l">${recStatusCell(b)}</td><td class="l">${recPlaceCell(b, pend)}</td></tr>`;
+}
+const REC_HEAD = `<tr><th class="l">Recommended</th><th class="l">Bet</th><th class="l" title="The price, book and size when it was first recommended (and locked). Use 'Got different odds?' if yours were different.">Recommended at</th><th class="l">Status</th><th class="l">Did you bet it?</th></tr>`;
+function renderRecs() {
+  const body = $("#rc-body"); if (!body) return;
+  if (!S.bets) { body.innerHTML = `<div class="empty">Bets have not been published yet.</div>`; return; }
+  const all = fromCols(S.bets.ledger), pend = ovReconcile(all), R = recRows();
+  const needs = R.filter((b) => recNeeds(b, pend)), active = R.filter((b) => recState(b) === "active");
+  if (!RC.f) RC.f = needs.length ? "needs" : active.length ? "active" : "all";
+  const graded = (x) => x.filter((b) => ["won", "lost", "push"].includes(b.status));
+  const rec = (x) => { const g = graded(x), w = g.filter((b) => b.status === "won").length, l = g.filter((b) => b.status === "lost").length, risk = g.reduce((a, b) => a + b.units, 0), u = g.reduce((a, b) => a + (b.pnl ?? 0), 0);
+    return { n: g.length, w, l, u, roi: risk ? u / risk : null }; };
+  const mine = rec(R.filter((b) => isPlaced(b, pend))), every = rec(R), skipped = rec(R.filter((b) => placeState(b, pend) === "not"));
+  const nPlaced = R.filter((b) => isPlaced(b, pend)).length;
+  const col = (v) => v > 0 ? "res-won" : v < 0 ? "res-lost" : "";
+  const tile = (k, v, s, cls = "") => `<div class="bt-card"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s}</div></div>`;
+  const recTxt = (r) => `${r.w}-${r.l} · ROI ${r.roi != null ? signed(100 * r.roi, 1) + "%" : "—"}`;
+  const tiles = [
+    tile("Active now", String(active.length), active.length ? `${fmt(active.reduce((a, b) => a + (b.now_units ?? b.units), 0), 2)} units recommended` : "none right now"),
+    tile("Need your answer", String(needs.length), needs.length ? "ended without Bet placed / Not placed" : "all answered", needs.length ? "rc-warn" : ""),
+    tile("Your placed bets", mine.n ? signed(mine.u, 2) + "u" : "—", mine.n ? recTxt(mine) : `${nPlaced} placed, none graded yet`, col(mine.u)),
+    tile("Every recommendation", every.n ? signed(every.u, 2) + "u" : "—", every.n ? `${recTxt(every)} at the recommended price` : "none graded yet", col(every.u)),
+    ...(skipped.n ? [tile("Ones you skipped", signed(skipped.u, 2) + "u", `${skipped.n} graded · what they would have made`, col(skipped.u))] : []),
+  ].join("");
+  const F = [["needs", `Needs your answer (${needs.length})`, (b) => recNeeds(b, pend)], ["active", `Active (${active.length})`, (b) => recState(b) === "active"],
+    ["placed", "Placed", (b) => isPlaced(b, pend)], ["not", "Not placed", (b) => placeState(b, pend) === "not"],
+    ["ended", "Expired / started", (b) => recState(b) !== "active"], ["all", `All (${R.length})`, () => true]];
+  const fx = (F.find((x) => x[0] === RC.f) ?? F[F.length - 1])[2];
+  const mkt = (b) => b.kind === "prop" ? b.stat : b.kind;
+  const list = R.filter((b) => fx(b) && (!RC.mk || mkt(b) === RC.mk || (RC.mk === "prop" && b.kind === "prop")))
+    .sort((a, b) => (b.tip_utc ?? "").localeCompare(a.tip_utc ?? "") || b.created_at.localeCompare(a.created_at));
+  const shown = RC.all ? list : list.slice(0, 60);
+  body.innerHTML = `<div class="bt-cards">${tiles}</div>
+    <div class="controls">
+      <div class="seg wrap" role="group" aria-label="Show" id="rc-f">${F.map(([k, l]) => `<button data-f="${k}" aria-pressed="${RC.f === k}">${l}</button>`).join("")}</div>
+      <label class="ctl">Market<select id="rc-mk"><option value="">All markets</option><option value="prop" ${RC.mk === "prop" ? "selected" : ""}>All player props</option>${Object.entries(MARKET_LABEL).map(([k, l]) => `<option value="${k}" ${RC.mk === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <div class="seg" role="group" aria-label="Which bets" id="rc-size"><button data-size="1u" aria-pressed="${BV.size === "1u"}">1+ units</button><button data-size="all" aria-pressed="${BV.size === "all"}">All sizes</button></div>
+    </div>
+    ${RC.f === "needs" && list.length ? `<p class="pr-note" style="margin:0 0 8px">These ended in the last ${NEEDS_DAYS} days (no longer recommended, or the game started) and you haven't said whether you bet them. <button type="button" class="ov-btn" id="rc-allnot">Mark all ${list.length} as Not placed</button></p>` : ""}
+    ${list.length ? `<div class="table-wrap"><table class="rctab"><thead>${REC_HEAD}</thead><tbody>${shown.map((b) => recRowHtml(b, pend)).join("")}</tbody></table></div>${list.length > 60 ? `<button type="button" class="ov-btn" id="rc-more" style="margin-top:8px">${RC.all ? "Show fewer" : `Show all ${list.length}`}</button>` : ""}`
+      : `<div class="empty">Nothing here.</div>`}`;
+  document.querySelectorAll("#rc-f button").forEach((x) => x.addEventListener("click", () => { RC.f = x.dataset.f; RC.all = false; renderRecs(); }));
+  $("#rc-mk").addEventListener("input", (e) => { RC.mk = e.target.value; renderRecs(); });
+  document.querySelectorAll("#rc-size button").forEach((x) => x.addEventListener("click", () => { BV.size = x.dataset.size; try { localStorage.setItem("betSize", BV.size); } catch (_) {} betViewsChanged(); }));
+  $("#rc-more")?.addEventListener("click", () => { RC.all = !RC.all; renderRecs(); });
+  const an = $("#rc-allnot");
+  an?.addEventListener("click", () => { if (!an.dataset.sure) { an.dataset.sure = "1"; an.textContent = `Sure? Mark ${list.length} as Not placed`; return; }
+    for (const b of list) setMark(placedKey(b), "not"); betViewsChanged(); });
+  recSeenUpdate();
+}
+// placements changed somewhere: redraw whatever shows them
+function betViewsChanged() {
+  const v = location.hash.slice(1);
+  if (v === "bets") renderBets();
+  if (v === "recs") renderRecs();
+  if ($("#rc-ask")?.open) recAskPaint();
+  recBanner();
+}
+// "did you bet it?": recommendations you saw while active that have since ended, asked when the page notices
+function recSeenGet() { try { return new Set(JSON.parse(localStorage.getItem(RC.seenKey) || "[]")); } catch (_) { return new Set(); } }
+function recSeenUpdate() { try { localStorage.setItem(RC.seenKey, JSON.stringify(recRows().filter((b) => recState(b) === "active").map((b) => b.bet_id))); } catch (_) {} }
+function recAskPaint() {
+  const d = $("#rc-ask"), ids = new Set((d.dataset.ids || "").split(",").map(Number));
+  const all = fromCols(S.bets.ledger), pend = ovReconcile(all), R = all.filter((b) => ids.has(b.bet_id));
+  $("#rc-ask-body").innerHTML = `<p class="pr-note" style="margin:0 0 10px">${R.length === 1 ? "This recommendation has" : "These recommendations have"} ended since you last looked (the price moved, the line changed, the edge dropped or the game started). Tell the tracker whether you bet ${R.length === 1 ? "it" : "them"}; if you got different odds, use "Got different odds?" after marking it placed. They stay on the Recommended Bets tab, so you can answer later too.</p>
+    <div class="table-wrap"><table class="rctab"><thead>${REC_HEAD}</thead><tbody>${R.map((b) => recRowHtml(b, pend)).join("")}</tbody></table></div>`;
+  const left = R.filter((b) => placeState(b, pend) === "pending").length;
+  $("#rc-ask-left").textContent = left ? `${left} still unanswered` : "All answered, thanks!";
+}
+function recAsk(list) {
+  const d = $("#rc-ask"); if (!list.length || d.open) return;
+  list.forEach((b) => RC.asked.add(b.bet_id));
+  d.dataset.ids = list.map((b) => b.bet_id).join(",");
+  $("#rc-ask-title").textContent = list.length === 1 ? "Did you place this bet?" : `Did you place these ${list.length} bets?`;
+  recAskPaint(); d.showModal();
+}
+function recBanner() {
+  const el = $("#rc-banner"); if (!el) return;
+  const all = S.bets ? fromCols(S.bets.ledger) : [], pend = ovReconcile(all), n = recRows().filter((b) => recNeeds(b, pend)).length;
+  el.innerHTML = n && location.hash.slice(1) !== "recs" ? `<div class="rc-banner">⚠️ <b>${n} recommended bet${n === 1 ? "" : "s"}</b> ended without an answer. Did you place ${n === 1 ? "it" : "them"}? <button type="button" class="ov-btn" id="rc-go">Review</button></div>` : "";
+  $("#rc-go")?.addEventListener("click", () => { RC.f = "needs"; showView("recs"); });
+}
+function recCheck() {
+  if (!S.bets) return;
+  const all = fromCols(S.bets.ledger), pend = ovReconcile(all), seen = recSeenGet();
+  const ended = recRows().filter((b) => seen.has(b.bet_id) && recState(b) !== "active" && placeState(b, pend) === "pending" && !RC.asked.has(b.bet_id));
+  if (ended.length) recAsk(ended);
+  recSeenUpdate(); recBanner();
+}
+async function recRefresh() {      // the site rebuilds every 15 minutes on game days: pick up new states without a reload
+  try { S.bets = await getJSON("bets.json"); } catch (_) { return; }
+  const v = location.hash.slice(1);
+  if (v === "bets") renderBets();
+  if (v === "recs") renderRecs();
+  recCheck();
+}
+function initRecs() {
+  document.addEventListener("click", (e) => {
+    const t = e.target.closest?.("[data-rcset]"); if (!t || t.disabled) return;
+    setMark(t.dataset.rckey, t.dataset.rcset); betViewsChanged();
+  });
+  $("#rc-ask-close").addEventListener("click", () => { $("#rc-ask").close(); recBanner(); });
+  $("#rc-ask-done").addEventListener("click", () => { $("#rc-ask").close(); recBanner(); });
+  setTimeout(recCheck, 1500);
+  setInterval(recRefresh, 10 * 60e3);
 }
 
 // ---------- bet tracker: which bets, and results by period ----------
@@ -3490,11 +3678,13 @@ function showView(name) {
   if (name === "daily") renderDaily();
   if (name === "props") renderProps();
   if (name === "bets") renderBets();
+  if (name === "recs") renderRecs();
   if (name === "lineups") renderLineupExplorer();
   if (name === "zones") renderZones();
   if (name === "lab") renderLab();
   if (name === "quads") renderQuads();
   history.replaceState(null, "", "#" + name);
+  recBanner();
 }
 
 async function loadSeasonFiles(season) {
@@ -3573,6 +3763,7 @@ async function init() {
   initLineups();
   initLab();
   initPlaced();
+  initRecs();
   initQuads();
   initOverrides();
   initZones();
@@ -3591,7 +3782,7 @@ async function init() {
   $("#fresh-toggle").addEventListener("click", (e) => { const p = $("#fresh-panel"); p.hidden = !p.hidden; e.currentTarget.setAttribute("aria-expanded", String(!p.hidden)); });
   window.addEventListener("resize", () => echarts?.getInstanceByDom($("#trend"))?.resize());
   const start = location.hash.slice(1);
-  if (["games", "bets", "props", "daily", "leaders", "teams", "lineups", "zones", "lab", "quads", "players", "model"].includes(start)) showView(start);
+  if (["games", "bets", "recs", "props", "daily", "leaders", "teams", "lineups", "zones", "lab", "quads", "players", "model"].includes(start)) showView(start);
 }
 init();
 </script>
