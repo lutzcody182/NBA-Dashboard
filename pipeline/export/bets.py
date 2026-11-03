@@ -106,12 +106,16 @@ MARKET_ORDER = ("pts", "reb", "ast", "fg3m", "pra", "pr", "pa", "ra", "moneyline
 # pipeline/overrides.py). Results and units are graded at these; the recommended price, line and
 # book are kept as they were, and closing-line value still measures the recommended pick.
 TAKEN_COLUMNS = (("taken_price", "INTEGER"), ("taken_line", "REAL"), ("taken_book", "TEXT"), ("taken_at", "TEXT"))
+# Where each recommendation stands now (track()): 'active' while the latest prices still recommend it,
+# 'expired' once they stop (with the reason and when), 'started' at tip-off. Nothing is deleted.
+STATE_COLUMNS = (("rec_state", "TEXT"), ("state_at", "TEXT"), ("ended_at", "TEXT"), ("end_reason", "TEXT"),
+                 ("now_price", "INTEGER"), ("now_line", "REAL"), ("now_units", "REAL"), ("now_book", "TEXT"))
 
 
 def ensure_table(conn) -> None:
     conn.executescript(TABLE)
     have = {r[1] for r in conn.execute("PRAGMA table_info(bets)")}
-    for col, decl in TAKEN_COLUMNS:
+    for col, decl in TAKEN_COLUMNS + STATE_COLUMNS:
         if col not in have:
             conn.execute(f"ALTER TABLE bets ADD COLUMN {col} {decl}")
     conn.commit()
@@ -333,6 +337,88 @@ def lock(conn, picks: list, games: dict, now_iso: str) -> int:
     return added
 
 
+def _same(c: dict, b: dict) -> bool:
+    if c["game_id"] != b["game_id"] or c["kind"] != b["kind"] or c["side"] != b["side"]:
+        return False
+    return c["kind"] != "prop" or (int(c["player_id"]) == int(b["player_id"]) and c["stat"] == b["stat"])
+
+
+def _odds(p) -> str:
+    return f"+{int(p)}" if p > 0 else str(int(p))
+
+
+def _why(b: dict, cands: list, prop_rows: list, table: list) -> str:
+    """Plain reason a recommendation no longer qualifies at the latest prices."""
+    if any(_same(c, b) for c in cands):
+        return "another bet on the same player or game now looks better"
+    if b["kind"] == "prop":
+        r = next((r for r in prop_rows if r["game_id"] == b["game_id"] and r["player_id"] == b["player_id"]
+                  and r["stat"] == b["stat"]), None)
+        if r is None:
+            return "no longer offered by enough legal books"
+        m = r.get("model") or {}
+        if m.get("status") in ("out", "doubtful", "questionable"):
+            return f"player listed as {m['status']}"
+        if r["line"] != b["line"]:
+            return f"line moved to {r['line']:g}"
+        best = (r["best_over"] if b["side"] == "over" else r["best_under"]) or {}
+        price, fair = best.get("price"), r["fair_over"] if b["side"] == "over" else 1 - r["fair_over"]
+        po = m["p_over"] / (m["p_over"] + m["p_under"]) if m and m.get("p_over") is not None and m["p_over"] + m["p_under"] > 0 else None
+        mod = po if b["side"] == "over" else (1 - po if po is not None else None)
+    else:
+        mk = {"moneyline": "h2h", "spread": "spreads", "total": "totals"}[b["kind"]]
+        t = next((t for t in table if t["game_id"] == b["game_id"] and t["market"] == mk), None)
+        if t is None:
+            return "no longer offered by enough legal books"
+        line = None if b["kind"] == "moneyline" else (t["line"] if b["side"] in ("home", "over", "under") else -t["line"])
+        if line is not None and b["line"] is not None and abs(line - b["line"]) > 1e-9:
+            return f"line moved to {line:+g}" if b["kind"] == "spread" else f"line moved to {line:g}"
+        price = (t["best"].get(b["side"]) or {}).get("price")
+        fair = t["fair"] if b["side"] in t["sides"][:1] else 1 - t["fair"]
+        mod = None
+    if price is not None and PM.decimal(price) < PM.decimal(b["price"]) - 1e-9:
+        return f"price moved to {_odds(price)}"
+    if mod is not None:
+        return f"edge dropped: model {100 * mod:.0f}%, market {100 * fair:.0f}%"
+    return f"edge dropped: market now {100 * fair:.0f}%"
+
+
+def track(conn, picks: list, cands: list, prop_rows: list, table: list, games: dict, now_iso: str) -> dict:
+    """Update each open recommendation's state: still recommended, no longer recommended (and why), or started."""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(bets)")]
+    rows = [dict(zip(cols, r)) for r in conn.execute(
+        "SELECT * FROM bets WHERE status = 'open' AND COALESCE(rec_state, '') != 'started'").fetchall()]
+    tips = dict(conn.execute("SELECT game_id, tip_utc FROM games WHERE game_id IN (%s)" % ",".join("?" * len(rows)),
+                             [b["game_id"] for b in rows]).fetchall()) if rows else {}
+    prop_games = {r["game_id"] for r in prop_rows}
+    line_games = {t["game_id"] for t in table}
+    n = Counter()
+    for b in rows:
+        tip = tips.get(b["game_id"]) or (games.get(b["game_id"]) or {}).get("tip_utc")
+        if tip and tip <= now_iso:
+            conn.execute("UPDATE bets SET rec_state='started', state_at=?, ended_at=COALESCE(ended_at, ?) WHERE bet_id=?",
+                         (now_iso, tip, b["bet_id"]))
+            n["started"] += 1
+            continue
+        if b["game_id"] not in games:          # not on this run's slate: leave as it was
+            continue
+        if b["game_id"] not in (prop_games if b["kind"] == "prop" else line_games):
+            continue                           # no prices for this game this run (e.g. a failed step): no change
+        live = next((c for c in picks if _same(c, b)), None)
+        if live is not None and (b["kind"] == "moneyline" or live["line"] == b["line"]):
+            conn.execute("""UPDATE bets SET rec_state='active', state_at=?, ended_at=NULL, end_reason=NULL,
+                            now_price=?, now_line=?, now_units=?, now_book=? WHERE bet_id=?""",
+                         (now_iso, live["price"], live["line"], live["units"], live["book"], b["bet_id"]))
+            n["active"] += 1
+        elif b.get("rec_state") != "expired":
+            why = f"line moved to {live['line']:g}" if live is not None else _why(b, cands, prop_rows, table)
+            conn.execute("UPDATE bets SET rec_state='expired', state_at=?, ended_at=?, end_reason=? WHERE bet_id=?",
+                         (now_iso, now_iso, why, b["bet_id"]))
+            n["expired"] += 1
+    conn.commit()
+    return dict(n)
+
+
 def _closing_fair(conn, bet: dict, tip: str):
     """Market fair chance for the bet's side at the last legal-book pull before tip-off, at the same line."""
     q = """SELECT book, side, line, price_american FROM odds_snapshots
@@ -457,6 +543,11 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESH_MINUTES)).strftime("%Y-%m-%dT%H:%M:%SZ")
     lockable = [c for c in picks if (fresh.get(c["game_id"]) or "") >= cutoff]
     added = lock(conn, lockable, gmap, now_iso)
+    try:
+        states = track(conn, picks, cands, prop_rows or [], table, gmap, now_iso)
+    except Exception:
+        log.exception("Tracking recommendation states failed")
+        states = {}
     for c in picks:
         c["odds_at"] = fresh.get(c["game_id"])
     graded = grade(conn, season)
@@ -475,7 +566,7 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
     cols = ["bet_id", "created_at", "game_id", "game_date", "home_team_id", "away_team_id", "tip_utc", "kind",
             "player_id", "player", "stat", "side", "line", "price", "book", "p_model", "p_market", "p_used", "ev",
             "units", "status", "result", "pnl", "close_fair", "clv", "home_score", "away_score",
-            "taken_price", "taken_line", "taken_book", "taken_at"]
+            "taken_price", "taken_line", "taken_book", "taken_at"] + [c for c, _ in STATE_COLUMNS]
     led = ledger[cols].astype(object).where(pd.notna(ledger[cols]), None) if len(ledger) else ledger
     game_lines = [{k: v for k, v in t.items() if k != "sides"} | {"sides": list(t["sides"])} for t in table]
     payload = {
@@ -493,4 +584,4 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
         "by_market": by_market,
     }
     write(out_dir / "bets.json", payload)
-    return {"picks": len(picks), "added": added, "graded": graded, "ledger": int(len(ledger))}
+    return {"picks": len(picks), "added": added, "graded": graded, "ledger": int(len(ledger)), "states": states}
