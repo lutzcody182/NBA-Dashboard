@@ -89,3 +89,43 @@ def test_beat_close_ignores_rounding_noise():
                        "clv": [0.0, 1e-17, 0.02]})
     s = B.summary(df)
     assert s["beat_close"] == pytest.approx(1 / 3, abs=1e-3) and s["clv_n"] == 3
+
+
+def test_track_states(tmp_path):
+    conn = db.connect(tmp_path / "t.sqlite")
+    B.ensure_table(conn)
+    conn.execute("INSERT INTO seasons VALUES ('2026-27', '2026-10-20', '2027-04-11')")
+    for tid, ab in ((1610612738, "BOS"), (1610612747, "LAL")):
+        conn.execute("INSERT OR IGNORE INTO teams (team_id, abbr, city, name) VALUES (?, ?, 'x', ?)", (tid, ab, ab))
+    for gid, tip in (("g1", "2026-11-03T23:00:00Z"), ("g0", "2026-11-03T15:00:00Z")):
+        conn.execute("""INSERT INTO games (game_id, season_id, season_type, game_date, tip_utc, home_team_id, away_team_id,
+                        status, source, fetched_at) VALUES (?, '2026-27', 'regular', '2026-11-03', ?, 1610612738,
+                        1610612747, 'scheduled', 'test', 'x')""", (gid, tip))
+    rows = [("g1", 7, "pts", "over", 25.5, -110), ("g1", 8, "reb", "under", 9.5, -105), ("g1", 9, "ast", "over", 6.5, 120),
+            ("g0", 7, "pts", "over", 20.5, -110)]
+    for gid, pid, stat, side, line, price in rows:
+        conn.execute("""INSERT INTO bets (created_at, game_id, kind, player_id, stat, side, line, price, book, p_model,
+                        p_market, p_used, ev, units) VALUES ('2026-11-03T14:00:00Z', ?, 'prop', ?, ?, ?, ?, ?, 'fanduel',
+                        .6, .5, .535, .05, 1)""", (gid, pid, stat, side, line, price))
+    conn.commit()
+    pick = {"kind": "prop", "game_id": "g1", "player_id": 7, "stat": "pts", "side": "over", "line": 25.5, "price": -105,
+            "book": "draftkings", "units": 0.75}
+    prop_rows = [{"game_id": "g1", "player_id": 8, "stat": "reb", "line": 10.5, "fair_over": .5, "best_over": None,
+                  "best_under": None, "model": {}},
+                 {"game_id": "g1", "player_id": 9, "stat": "ast", "line": 6.5, "fair_over": .5,
+                  "best_over": {"price": 100, "book": "fanduel"}, "best_under": {"price": -120, "book": "fanduel"},
+                  "model": {"p_over": .52, "p_under": .48}}]
+    games = {"g1": {"tip_utc": "2026-11-03T23:00:00Z"}}
+    out = B.track(conn, [pick], [pick], prop_rows, [], games, "2026-11-03T17:00:00Z")
+    assert out == {"active": 1, "expired": 2, "started": 1}
+    st = {r[0]: r[1:] for r in conn.execute("SELECT player_id || stat || game_id, rec_state, end_reason, now_price FROM bets")}
+    assert st["7ptsg1"] == ("active", None, -105)
+    assert st["8rebg1"][:2] == ("expired", "line moved to 10.5")
+    assert st["9astg1"][:2] == ("expired", "price moved to +100")
+    assert st["7ptsg0"][0] == "started"
+    # an expired one keeps its first reason and time on later runs
+    B.track(conn, [], [], prop_rows, [], games, "2026-11-03T18:00:00Z")
+    assert tuple(conn.execute("SELECT end_reason, ended_at FROM bets WHERE player_id=8").fetchone()) == ("line moved to 10.5", "2026-11-03T17:00:00Z")
+    assert tuple(conn.execute("SELECT rec_state, end_reason FROM bets WHERE player_id=7 AND game_id='g1'").fetchone()) == \
+        ("expired", "no longer offered by enough legal books")
+    assert B.track(conn, [], [], [], [], games, "2026-11-03T20:00:00Z") == {}      # nothing priced: nothing changes
