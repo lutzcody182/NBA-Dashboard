@@ -2356,7 +2356,7 @@ function renderBets() {
   const typeRow = ([label, r, bold]) => `<tr${bold ? ' style="font-weight:600"' : ""}><td class="l">${esc(label)}</td>${summaryCells(betSummary(r))}</tr>`;
   $("#bt-kinds").innerHTML = kinds.length ? `<div class="table-wrap"><table><thead><tr><th class="l">Type</th>${SUMMARY_HEAD}</tr></thead><tbody>${kinds.map(typeRow).join("")}</tbody></table></div>
     <p class="pr-note">A few dozen bets says almost nothing about skill; even a few hundred leaves a wide range. Beating the closing line (the market moving toward the pick after it was made) shows up much sooner than profit does.</p>` : `<p class="pr-note">Nothing on the ledger yet.</p>`;
-  $("#bt-rules").innerHTML = `<p class="pr-note"><strong>Books:</strong> state-licensed US sportsbooks only (${esc(st.legal_books.filter((b) => BOOK_NAME[b]).map(bookName).filter((v, i, a) => a.indexOf(v) === i).join(", "))}, and others where licensed). Offshore books in the feed are ignored. Check which of these operate in your state.</p>
+  $("#bt-rules").innerHTML = `<p class="pr-note"><strong>Books:</strong> picks and best prices come only from ${esc((st.bet_books ?? []).map(bookName).filter((v, i, a) => a.indexOf(v) === i).join(", ") || "FanDuel, theScore Bet, Caesars, Fanatics")}. The other state-licensed US books (DraftKings, BetMGM, BetRivers and so on) still count toward the market's fair chance, because more books give a sharper read of the market, but are never shown as a place to bet. Offshore books in the feed are ignored.</p>
     <p class="pr-note"><strong>Chances:</strong> props use the props model; moneylines use the simulation's win chance; spreads and totals use a normal curve around the simulated margin and total, as wide as the simulation's misses on last season's replay. The chance used for a bet is ${Math.round(100 * st.blend)}% model and ${Math.round(100 * (1 - st.blend))}% market.</p>
     <p class="pr-note"><strong>A bet needs:</strong> the model rating the side ${Math.round(100 * st.min_gap)} to ${Math.round(100 * st.max_gap)} points above the market (bigger gaps usually mean news the model missed), an expected return of ${Math.round(100 * st.min_ev)}%+ at the best price, ${st.min_books}+ legal books quoting it, a price between ${st.price_range[0]} and +${st.price_range[1]}, and for props a player with 5+ games of history who isn't questionable or doubtful.</p>
     <p class="pr-note"><strong>Stakes:</strong> ${Math.round(100 * st.kelly)}% of the Kelly stake, 1 unit = ${st.unit_pct}% of bankroll, rounded to 0.25 units, at most ${st.max_units} units a bet and ${st.max_game_units} a game (a game's stakes are scaled down to fit; no qualifying bet is dropped)${st.max_day_picks != null ? `, and ${st.max_day_picks} bets or ${st.max_day_units} units a day` : ", with no daily limit"}. One prop per player and one side bet (moneyline or spread) per game, since those move together.</p>
@@ -2365,9 +2365,9 @@ function renderBets() {
 
 // ---------- props ----------
 const BOOK_NAME = { draftkings: "DraftKings", fanduel: "FanDuel", betmgm: "BetMGM", caesars: "Caesars", williamhill_us: "Caesars",
-  espnbet: "ESPN BET", betrivers: "BetRivers", fanatics: "Fanatics", bovada: "Bovada", betonlineag: "BetOnline", mybookieag: "MyBookie",
+  espnbet: "theScore Bet", thescore: "theScore Bet", betrivers: "BetRivers", fanatics: "Fanatics", bovada: "Bovada", betonlineag: "BetOnline", mybookieag: "MyBookie",
   hardrockbet: "Hard Rock", ballybet: "Bally Bet", lowvig: "LowVig", betus: "BetUS", pointsbetus: "PointsBet", unibet_us: "Unibet" };
-const bookName = (b) => BOOK_NAME[b] ?? b;
+const bookName = (b) => b == null ? "" : BOOK_NAME[b] ?? b;
 const odds = (p) => p == null ? "—" : (p > 0 ? "+" : "") + p;
 function gameLabel(gid) {
   const g = S.simByGame[gid] ?? S.projByGame[gid];
@@ -2401,7 +2401,8 @@ function renderProps() {
     p.team = propTeam(p);
     p.mpo = p.model ? p.model.p_over / (p.model.p_over + p.model.p_under) : null;
     p.edge = p.model?.edge_over ?? null; p.absedge = p.edge == null ? null : Math.abs(p.edge);
-    p.bestev = p.model ? Math.max(p.model.ev_over, p.model.ev_under) : null;
+    p.bestev = p.model ? Math.max(p.model.ev_over ?? -9, p.model.ev_under ?? -9) : null;
+    if (p.bestev === -9) p.bestev = null;
     return p;
   });
   rows = rows.filter((p) => (!gid || p.game_id === gid) && (!stat || p.stat === stat) && (!q || p.name.toLowerCase().includes(q))
@@ -2425,7 +2426,7 @@ function renderProps() {
     const id = `${p.game_id}|${p.player_id}|${p.stat}`;
     const m = p.model;
     const ecls = p.edge == null ? "" : Math.abs(p.edge) < 0.03 ? "" : p.edge > 0 ? "pos" : "neg";
-    const side = m ? (m.ev_over >= m.ev_under ? "over" : "under") : null;
+    const side = m ? ((m.ev_over ?? -9) >= (m.ev_under ?? -9) ? "over" : "under") : null;
     const main = `<tr class="main" data-id="${esc(id)}"><td class="name">${plink(p.player_id, p.name)}<small>${abbr(p.team)}${m?.status && !["available", "unknown"].includes(m.status) ? " " + esc(m.status) : ""}${m?.games != null && m.games < 5 ? ` <span class="flag down" title="The minutes model has only ${m.games} games of this player to go on (this season and last), so his minutes are a guess">${m.games} games</span>` : ""}</small></td>
       <td class="l">${esc(gameLabel(p.game_id))}</td><td class="l">${esc(d.stat_labels?.[p.stat] ?? p.stat)}</td><td>${fmt(p.line)}</td>
       <td>${pct(p.fair_over)}%</td><td>${m ? pct(p.mpo) + "%" : "—"}</td>
@@ -2434,7 +2435,8 @@ function renderProps() {
       <td>${odds(p.best_under.price)} <small style="color:var(--muted)">${esc(bookName(p.best_under.book))}</small></td>
       <td>${m ? `${signed(100 * p.bestev, 1)}% <small style="color:var(--muted)">${side}</small>` : "—"}</td><td>${p.books.length}</td></tr>`;
     if (S.propsView.open !== id) return main;
-    const bk = p.books.map((b) => `<tr><td class="l">${esc(bookName(b.book))}</td><td>${odds(b.over)}</td><td>${odds(b.under)}</td><td>${pct(b.fair_over)}%</td><td>${pct(b.hold)}%</td></tr>`).join("");
+    const mine = new Set(S.bets?.settings?.bet_books ?? ["fanduel", "espnbet", "thescore", "williamhill_us", "caesars", "fanatics"]);
+    const bk = [...p.books].sort((a, b) => mine.has(b.book) - mine.has(a.book)).map((b) => `<tr${mine.has(b.book) ? "" : ` style="opacity:.55" title="Used only to measure the market's fair chance; not a book you bet at"`}><td class="l">${esc(bookName(b.book))}${mine.has(b.book) ? "" : ` <small>(market only)</small>`}</td><td>${odds(b.over)}</td><td>${odds(b.under)}</td><td>${pct(b.fair_over)}%</td><td>${pct(b.hold)}%</td></tr>`).join("");
     const why = m ? `If he plays, the model expects about ${fmt(m.min)} minutes and ${fmt(m.mean)} ${esc((d.stat_labels?.[p.stat] ?? p.stat).toLowerCase())}. Over ${fmt(p.line)}: ${pct(m.p_over)}%, under: ${pct(m.p_under)}%${m.p_push > 0.001 ? `, push: ${pct(m.p_push)}%` : ""}.` : "No model number: the player isn't in the simulation (listed out, or projected for under 3 minutes).";
     return main + `<tr class="pr-detail"><td colspan="${cols.length}"><p class="pr-note">${why}${p.other_lines?.length ? ` Other lines offered: ${p.other_lines.map((l) => fmt(l)).join(", ")}.` : ""}</p>
       <table><thead><tr><th class="l">Book</th><th>Over</th><th>Under</th><th>Fair over</th><th>Margin</th></tr></thead><tbody>${bk}</tbody></table></td></tr>`;
