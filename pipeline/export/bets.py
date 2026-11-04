@@ -18,7 +18,8 @@ How much to trust the model
     * the model rating the side at least MIN_GAP above the market, and not
       more than MAX_GAP above it (bigger gaps usually mean news the model
       hasn't seen)
-    * at least MIN_BOOKS legal books quoting it
+    * at least MIN_BOOKS legal books quoting it (they all set the market's fair chance), and a price at one
+      of the books you bet at (odds_api.BET_BOOKS: FanDuel, theScore Bet / ESPN BET, Caesars, Fanatics)
     * props: the player has 5+ games of history and is not listed as
       questionable or doubtful
 Stakes
@@ -162,7 +163,8 @@ def game_market_table(odds: pd.DataFrame) -> list:
                               "fair": round(fair, 4), "hold": round(hold, 4)})
         if not books:
             continue
-        best = {s: max(books, key=lambda b: PM.decimal(b[s])) for s in (a_side, b_side)}
+        mine = [b for b in books if b["book"] in OA.BET_BOOKS]     # best prices only from the books you bet at
+        best = {s: (max(mine, key=lambda b: PM.decimal(b[s])) if mine else {s: None, "book": None}) for s in (a_side, b_side)}
         out.append({"game_id": gid, "market": market, "line": float(line), "sides": (a_side, b_side),
                     "fair": round(float(np.median([b["fair"] for b in books])), 4), "books": books,
                     "best": {s: {"price": best[s][s], "book": best[s]["book"]} for s in (a_side, b_side)}})
@@ -574,7 +576,7 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
         "settings": {"blend": BLEND, "min_ev": MIN_EV, "min_gap": MIN_GAP, "max_gap": MAX_GAP, "min_books": MIN_BOOKS, "kelly": KELLY,
                      "unit_pct": UNIT_PCT, "max_units": MAX_UNITS, "max_game_units": MAX_GAME_UNITS,
                      "max_day_picks": MAX_DAY_PICKS, "max_day_units": MAX_DAY_UNITS,
-                     "price_range": [MIN_PRICE, MAX_PRICE], "legal_books": sorted(OA.LEGAL_BOOKS)},
+                     "price_range": [MIN_PRICE, MAX_PRICE], "legal_books": sorted(OA.LEGAL_BOOKS), "bet_books": sorted(OA.BET_BOOKS)},
         "current": picks, "candidates": len(cands), "added_this_run": added, "graded_this_run": graded,
         "odds_as_of": max((v for k, v in fresh.items() if k in gmap), default=None),
         "next_pull": pulled.get("reason") if pulled.get("status") == "skipped" else None,
