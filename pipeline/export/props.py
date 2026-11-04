@@ -160,8 +160,9 @@ def market_table(odds: pd.DataFrame) -> list:
                               "fair_over": round(fair, 4), "hold": round(hold, 4)})
         if not books:
             continue
-        bo = max(books, key=lambda b: PM.decimal(b["over"]))
-        bu = max(books, key=lambda b: PM.decimal(b["under"]))
+        mine = [b for b in books if b["book"] in OA.BET_BOOKS]     # best prices only from the books you bet at
+        bo = max(mine, key=lambda b: PM.decimal(b["over"])) if mine else {"over": None, "book": None}
+        bu = max(mine, key=lambda b: PM.decimal(b["under"])) if mine else {"under": None, "book": None}
         out.append({"game_id": gid, "player_id": int(pid), "stat": stat, "line": float(line),
                     "fair_over": round(float(np.median([b["fair_over"] for b in books])), 4),
                     "books": sorted(books, key=lambda b: b["book"]),
@@ -249,14 +250,16 @@ def compare(rows: list, inputs: dict, disp: dict) -> list:
             continue
         rate, shape = x["rates"][r["stat"]], disp[r["stat"]]
         po, pu, push = PM.over_under(r["line"], rate, shape, x["min"], x["p10"], x["p90"])
-        dec_o, dec_u = PM.decimal(r["best_over"]["price"]), PM.decimal(r["best_under"]["price"])
+        bo_p, bu_p = r["best_over"]["price"], r["best_under"]["price"]
+        dec_o, dec_u = (PM.decimal(bo_p) if bo_p is not None else None), (PM.decimal(bu_p) if bu_p is not None else None)
         fair_o = r["fair_over"]
         # compare like with like: the model's over chance among results that are not a push
         po_np = po / (po + pu) if po + pu > 0 else None
         r["model"] = {"mean": round(rate * x["min"], 2), "min": round(x["min"], 1), "p_over": round(po, 4),
                       "p_under": round(pu, 4), "p_push": round(push, 4),
                       "edge_over": round(po_np - fair_o, 4) if po_np is not None else None,
-                      "ev_over": round(po * (dec_o - 1) - pu, 4), "ev_under": round(pu * (dec_u - 1) - po, 4),
+                      "ev_over": round(po * (dec_o - 1) - pu, 4) if dec_o else None,
+                      "ev_under": round(pu * (dec_u - 1) - po, 4) if dec_u else None,
                       "status": x["status"], "games": x.get("games")}
         out.append(r)
     return out
@@ -309,9 +312,9 @@ def track_record(conn, season: str) -> dict:
         """Bet the side the model favors by at least `thr` over the market, at the best price stored."""
         res = []
         for r in x.itertuples():
-            if r.edge >= thr:
+            if r.edge >= thr and pd.notna(r.best_over):
                 res.append(PM.decimal(r.best_over) - 1 if r.over else -1.0)
-            elif r.edge <= -thr:
+            elif r.edge <= -thr and pd.notna(r.best_under):
                 res.append(PM.decimal(r.best_under) - 1 if not r.over else -1.0)
         if not res:
             return {"threshold": thr, "n": 0}
