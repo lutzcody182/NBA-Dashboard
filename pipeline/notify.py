@@ -22,7 +22,7 @@ ET = ZoneInfo("America/New_York")
 STAT_WORD = {"pts": "points", "reb": "rebounds", "ast": "assists", "fg3m": "threes", "pra": "pts+reb+ast",
              "pr": "pts+reb", "pa": "pts+ast", "ra": "reb+ast"}
 BOOKS = {"draftkings": "DraftKings", "fanduel": "FanDuel", "betmgm": "BetMGM", "williamhill_us": "Caesars",
-         "caesars": "Caesars", "espnbet": "ESPN BET", "betrivers": "BetRivers", "fanatics": "Fanatics",
+         "caesars": "Caesars", "espnbet": "theScore Bet", "thescore": "theScore Bet", "betrivers": "BetRivers", "fanatics": "Fanatics",
          "hardrockbet": "Hard Rock", "ballybet": "Bally Bet", "betparx": "betPARX", "pointsbetus": "PointsBet",
          "unibet_us": "Unibet", "superbook": "SuperBook", "wynnbet": "WynnBET", "windcreek": "Wind Creek",
          "betway": "Betway", "tipico": "Tipico", "sisportsbook": "SI Sportsbook", "circasports": "Circa"}
