@@ -103,19 +103,37 @@ def test_dispersion_recovers_known_spread():
 
 def test_market_table_uses_most_offered_line():
     rows = []
-    for book, line, o, u in (("dk", 24.5, -115, -105), ("fd", 24.5, -110, -110), ("mgm", 25.5, 100, -120)):
+    for book, line, o, u in (("draftkings", 24.5, -115, -105), ("fanduel", 24.5, -110, -110), ("williamhill_us", 24.5, -112, -108),
+                             ("betmgm", 25.5, 100, -120)):
         rows += [{"game_id": "g", "player_id": 7, "market": "player_points", "book": book, "side": "over", "line": line,
                   "price_american": o},
                  {"game_id": "g", "player_id": 7, "market": "player_points", "book": book, "side": "under", "line": line,
                   "price_american": u}]
     t = PX.market_table(pd.DataFrame(rows))
-    assert len(t) == 1 and t[0]["line"] == 24.5 and len(t[0]["books"]) == 2 and t[0]["other_lines"] == [25.5]
-    assert t[0]["best_over"] == {"price": -110, "book": "fd"} and t[0]["best_under"] == {"price": -105, "book": "dk"}
+    assert len(t) == 1 and t[0]["line"] == 24.5 and len(t[0]["books"]) == 3 and t[0]["other_lines"] == [25.5]
+    # DraftKings has the best under (-105) and counts toward the market, but best prices only come from your books
+    assert t[0]["best_over"] == {"price": -110, "book": "fanduel"} and t[0]["best_under"] == {"price": -108, "book": "williamhill_us"}
     inputs = {("g", 7): {"min": 34, "p10": 28, "p90": 39, "status": "available", "name": "x",
                          "rates": {s: 0.85 for s in PM.STATS}}}
     out = PX.compare(t, inputs, {s: {"shape": "skewed", "a": 2.7, "b": 0.0, "g": 0.6} for s in PM.STATS})
     assert out[0]["model"]["mean"] == pytest.approx(28.9)
     assert out[0]["model"]["edge_over"] > 0
+
+
+def test_no_bet_book_at_the_line_means_no_best_price():
+    rows = []
+    for book in ("draftkings", "betmgm"):
+        for side, price in (("over", -110), ("under", -110)):
+            rows.append({"game_id": "g", "player_id": 7, "market": "player_points", "book": book, "side": side,
+                         "line": 24.5, "price_american": price})
+    t = PX.market_table(pd.DataFrame(rows))
+    assert t[0]["best_over"]["price"] is None and t[0]["best_under"]["book"] is None
+    inputs = {("g", 7): {"min": 34, "p10": 28, "p90": 39, "status": "available", "name": "x",
+                         "rates": {s: 0.85 for s in PM.STATS}}}
+    m = PX.compare(t, inputs, {s: {"shape": "skewed", "a": 2.7, "b": 0.0, "g": 0.6} for s in PM.STATS})[0]["model"]
+    assert m["ev_over"] is None and m["ev_under"] is None
+    from pipeline.export import bets as B
+    assert B.prop_candidates([{**t[0], "model": {**m, "games": 20}}]) == []
 
 
 def test_skewed_shape_matches_scaled_counts():
