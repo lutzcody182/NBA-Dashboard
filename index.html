@@ -1950,12 +1950,65 @@ function betLabel(b) {
 }
 const betResultCell = (b) => `<span class="res-${b.status}">${b.status === "open" ? "Open" : b.status === "live" ? "Not locked" : b.status[0].toUpperCase() + b.status.slice(1)}</span>`;
 
+// ---------- saved answers: IndexedDB first ----------
+// localStorage is shared by every lutzcody182.github.io project and fills up (other dashboards cache API data there),
+// and when it's full every save fails silently. IndexedDB has its own, much larger allowance; localStorage is only
+// the fallback. KV.mode says which one is working ("idb", "local" or "memory" = nothing saves in this browser).
+const KV = {
+  cache: {}, mode: "memory", db: null, chan: null,
+  async init() {
+    try {
+      this.db = await new Promise((ok, bad) => {
+        const r = indexedDB.open("nba-court-lab", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("kv");
+        r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error);
+        setTimeout(() => bad(new Error("IndexedDB timed out")), 4000);
+      });
+      const all = await this._tx("readonly", (s) => new Promise((ok, bad) => {
+        const out = {}, c = s.openCursor();
+        c.onsuccess = () => { const cur = c.result; if (!cur) return ok(out); out[cur.key] = cur.value; cur.continue(); };
+        c.onerror = () => bad(c.error);
+      }));
+      this.cache = all; this.mode = "idb";
+      await this._tx("readwrite", (s) => s.put(1, "__test"));
+    } catch (e) { this.db = null; }
+    // anything still only in localStorage (saved by an older version of the page) is carried over
+    for (const k of ["betsPlaced", "recSeen", "ovPending", "betSize"]) {
+      if (this.cache[k] !== undefined) continue;
+      try { const v = localStorage.getItem(k); if (v != null) { this.cache[k] = k === "betSize" ? v : JSON.parse(v); if (this.db) this._put(k, this.cache[k]); } } catch (_) {}
+    }
+    if (!this.db) { try { localStorage.setItem("__nba_t", "1"); localStorage.removeItem("__nba_t"); this.mode = "local"; } catch (_) { this.mode = "memory"; } }
+    try {
+      this.chan = new BroadcastChannel("nba-court-lab");
+      this.chan.onmessage = (e) => { if (e.data?.k) { this.cache[e.data.k] = e.data.v; KV.onChange?.(e.data.k); } };
+    } catch (_) {}
+  },
+  _tx(mode, fn) {
+    return new Promise((ok, bad) => {
+      const t = this.db.transaction("kv", mode), s = t.objectStore("kv"); let out;
+      const r = fn(s);
+      if (r && typeof r.then === "function") r.then((v) => { out = v; }, bad); else if (r) r.onsuccess = () => { out = r.result; };
+      t.oncomplete = () => ok(out); t.onerror = () => bad(t.error); t.onabort = () => bad(t.error);
+    });
+  },
+  _put(k, v) { return this._tx("readwrite", (s) => s.put(v, k)).catch(() => { this.mode = "memory"; }); },
+  get(k, d) { const v = this.cache[k]; return v === undefined ? d : v; },
+  set(k, v) {
+    const copy = v && typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v;
+    this.cache[k] = copy;
+    if (this.db) this._put(k, copy);
+    else if (this.mode === "local") { try { localStorage.setItem(k, typeof copy === "string" ? copy : JSON.stringify(copy)); } catch (_) { this.mode = "memory"; } }
+    try { this.chan?.postMessage({ k, v: copy }); } catch (_) {}
+  },
+};
+const kvWarning = () => KV.mode === "memory" ? `<div class="bt-warn" style="border-left-color:var(--bad)">This browser isn't letting the dashboard save anything (private window or storage turned off), so your Bet placed / Not placed answers will be forgotten when the page closes.</div>` : "";
+
 // ---------- the odds you got (bet overrides) ----------
 const REPO = "lutzcody182/NBA-Dashboard";
 const MARKET_LABEL = { pts: "Points", reb: "Rebounds", ast: "Assists", fg3m: "Threes", pra: "Pts+Reb+Ast", pr: "Pts+Reb", pa: "Pts+Ast", ra: "Reb+Ast", moneyline: "Moneyline", spread: "Spread", total: "Total" };
 const OV_BOOKS = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN BET", "BetRivers", "Fanatics", "Hard Rock", "bet365", "Bally Bet", "betPARX", "Other"];
-function ovPending() { try { return JSON.parse(localStorage.getItem("ovPending") || "{}"); } catch (_) { return {}; } }
-function ovSavePending(p) { try { localStorage.setItem("ovPending", JSON.stringify(p)); } catch (_) {} }
+function ovPending() { return { ...KV.get("ovPending", {}) }; }
+function ovSavePending(p) { const old = JSON.stringify(KV.get("ovPending", {})); if (JSON.stringify(p) !== old) KV.set("ovPending", p); }
 // confirmed overrides come back on the ledger; drop pending ones the ledger now shows (or after 2 days)
 function ovReconcile(led) {
   const p = ovPending(), byId = new Map(led.map((b) => [b.bet_id, b]));
@@ -2023,7 +2076,7 @@ function initOverrides() {
 
 // ---------- your answer for each recommended bet (saved in this browser): placed, not placed, or still pending ----------
 // A bet whose odds you recorded ("Got different odds?") counts as placed on every device.
-const PLACED = (() => { try { return JSON.parse(localStorage.getItem("betsPlaced") || "{}") || {}; } catch (_) { return {}; } })();
+const PLACED = {};          // filled from KV when the page starts (initPlaced)
 const placedKey = (b) => [b.game_id, b.kind, b.player_id ?? "", b.stat ?? "", b.side].join("|");
 const placedByOdds = (b, pend) => { const p = pend?.[b.bet_id]; return p ? !p.clear : b.taken_price != null; };
 const markOf = (key) => { const v = PLACED[key]; return typeof v === "number" ? "placed" : v?.s ?? "pending"; };   // older saves held only a time
@@ -2034,7 +2087,7 @@ function setMark(key, s) {
   if (s === "pending") delete PLACED[key]; else PLACED[key] = { s, t: Date.now() };
   const old = Date.now() - 200 * 864e5;          // forget answers after 200 days
   for (const [k, v] of Object.entries(PLACED)) if (markTime(v) < old) delete PLACED[k];
-  try { localStorage.setItem("betsPlaced", JSON.stringify(PLACED)); } catch (_) { /* private window: kept until the page closes */ }
+  KV.set("betsPlaced", PLACED);
 }
 const setPlaced = (key, on) => setMark(key, on ? "placed" : "pending");
 function placedBtn(b, pend) {
@@ -2049,12 +2102,11 @@ function initPlaced() {
     betViewsChanged();
   });
   // another tab of the dashboard changed the marks: pick them up
-  window.addEventListener("storage", (e) => {
-    if (e.key !== "betsPlaced") return;
-    let fresh = {}; try { fresh = JSON.parse(e.newValue || "{}") || {}; } catch (_) {}
-    for (const k of Object.keys(PLACED)) delete PLACED[k];
-    Object.assign(PLACED, fresh); betViewsChanged();
-  });
+  KV.onChange = (k) => {
+    if (k === "betsPlaced") { for (const x of Object.keys(PLACED)) delete PLACED[x]; Object.assign(PLACED, KV.get("betsPlaced", {})); }
+    if (k === "betSize") BV.size = KV.get("betSize", "1u");
+    if (k === "betsPlaced" || k === "betSize" || k === "ovPending") betViewsChanged();
+  };
 }
 
 // ============================== RECOMMENDED BETS: every recommendation, where it stands, and "did you bet it?" ==============================
@@ -2128,7 +2180,7 @@ function renderRecs() {
   const list = R.filter((b) => fx(b) && (!RC.mk || mkt(b) === RC.mk || (RC.mk === "prop" && b.kind === "prop")))
     .sort((a, b) => (b.tip_utc ?? "").localeCompare(a.tip_utc ?? "") || b.created_at.localeCompare(a.created_at));
   const shown = RC.all ? list : list.slice(0, 60);
-  body.innerHTML = `<div class="bt-cards">${tiles}</div>
+  body.innerHTML = `${kvWarning()}<div class="bt-cards">${tiles}</div>
     <div class="controls">
       <div class="seg wrap" role="group" aria-label="Show" id="rc-f">${F.map(([k, l]) => `<button data-f="${k}" aria-pressed="${RC.f === k}">${l}</button>`).join("")}</div>
       <label class="ctl">Market<select id="rc-mk"><option value="">All markets</option><option value="prop" ${RC.mk === "prop" ? "selected" : ""}>All player props</option>${Object.entries(MARKET_LABEL).map(([k, l]) => `<option value="${k}" ${RC.mk === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
@@ -2139,7 +2191,7 @@ function renderRecs() {
       : `<div class="empty">Nothing here.</div>`}`;
   document.querySelectorAll("#rc-f button").forEach((x) => x.addEventListener("click", () => { RC.f = x.dataset.f; RC.all = false; renderRecs(); }));
   $("#rc-mk").addEventListener("input", (e) => { RC.mk = e.target.value; renderRecs(); });
-  document.querySelectorAll("#rc-size button").forEach((x) => x.addEventListener("click", () => { BV.size = x.dataset.size; try { localStorage.setItem("betSize", BV.size); } catch (_) {} betViewsChanged(); }));
+  document.querySelectorAll("#rc-size button").forEach((x) => x.addEventListener("click", () => { BV.size = x.dataset.size; KV.set("betSize", BV.size); betViewsChanged(); }));
   $("#rc-more")?.addEventListener("click", () => { RC.all = !RC.all; renderRecs(); });
   const an = $("#rc-allnot");
   an?.addEventListener("click", () => { if (!an.dataset.sure) { an.dataset.sure = "1"; an.textContent = `Sure? Mark ${list.length} as Not placed`; return; }
@@ -2155,8 +2207,11 @@ function betViewsChanged() {
   recBanner();
 }
 // "did you bet it?": recommendations you saw while active that have since ended, asked when the page notices
-function recSeenGet() { try { return new Set(JSON.parse(localStorage.getItem(RC.seenKey) || "[]")); } catch (_) { return new Set(); } }
-function recSeenUpdate() { try { localStorage.setItem(RC.seenKey, JSON.stringify(recRows().filter((b) => recState(b) === "active").map((b) => b.bet_id))); } catch (_) {} }
+function recSeenGet() { return new Set(KV.get(RC.seenKey, [])); }
+function recSeenUpdate() {     // remembers what was active the last time you looked, so newly ended ones can be asked about
+  const ids = recRows().filter((b) => recState(b) === "active").map((b) => b.bet_id);
+  if (JSON.stringify(ids) !== JSON.stringify(KV.get(RC.seenKey, []))) KV.set(RC.seenKey, ids);
+}
 function recAskPaint() {
   const d = $("#rc-ask"), ids = new Set((d.dataset.ids || "").split(",").map(Number));
   const all = fromCols(S.bets.ledger), pend = ovReconcile(all), R = all.filter((b) => ids.has(b.bet_id));
@@ -2205,7 +2260,7 @@ function initRecs() {
 
 // ---------- bet tracker: which bets, and results by period ----------
 const BET_PERIODS = [["yesterday", "Yesterday"], ["7", "Last 7 days"], ["14", "Last 14 days"], ["30", "Last month"], ["season", "Season"]];
-const BV = (() => { try { return { size: localStorage.getItem("betSize") || "1u" }; } catch (_) { return { size: "1u" }; } })();
+const BV = { size: "1u" };   // set from KV when the page starts
 // game dates are Eastern; "last N days" includes today
 function inPeriod(b, p) {
   if (p === "season") return true;
@@ -3704,6 +3759,9 @@ async function loadSeasonFiles(season) {
 }
 
 async function init() {
+  await KV.init();
+  Object.assign(PLACED, KV.get("betsPlaced", {}));
+  BV.size = KV.get("betSize", "1u");
   try {
     S.meta = await getJSON("meta.json");
   } catch (e) {
@@ -3755,7 +3813,7 @@ async function init() {
   $("#pr-stat").insertAdjacentHTML("beforeend", Object.entries(S.props?.stat_labels ?? {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""));
   ["#bt-kind", "#bt-status", "#bt-period"].forEach((sel) => $(sel).addEventListener("input", renderBets));
   document.querySelectorAll("#bt-size button").forEach((x) => x.addEventListener("click", () => {
-    BV.size = x.dataset.size; try { localStorage.setItem("betSize", BV.size); } catch (_) {} renderBets(); }));
+    BV.size = x.dataset.size; KV.set("betSize", BV.size); renderBets(); }));
   ["#pr-game", "#pr-stat", "#pr-search", "#pr-edge", "#pr-books", "#pr-hist"].forEach((sel) => $(sel).addEventListener("input", () => { S.propsView.open = null; renderProps(); }));
   if (!S.logs[S.meta.season]?.length && seasons.includes(S.meta.previous_season)) $("#f-season").value = S.meta.previous_season;
 
