@@ -2389,7 +2389,8 @@ function renderProps() {
   head.innerHTML = [
     `<span>Odds as of <strong>${asOf ? fmtStamp(asOf) : "no pull yet"}</strong></span>`,
     d.credits_remaining != null ? `<span>API credits left this month <strong>${Math.round(d.credits_remaining).toLocaleString()}</strong></span>` : "",
-    `<span>Pulled about every 75 to 90 minutes on game days (within a ${d.budget?.daily_cap ?? 450}-credit daily budget), for games starting within 8 hours</span>`,
+    `<span>Each game is pulled once on its game day from 8 AM, then about every hour in the last ${d.budget?.near_hours ?? 4} hours before tip-off (within ${d.budget?.daily_cap ?? 600} credits a day and ${d.budget?.monthly_cap ?? 10500} a month for NBA${d.budget?.month_used != null ? `; ${Math.round(d.budget.month_used)} used this month` : ""})</span>`,
+    d.lineups ? `<span>Starting lineups: ${d.lineups.status === "ok" ? `<strong>${d.lineups.teams_confirmed}</strong> of ${2 * (d.lineups.matched ?? 0)} teams confirmed` : `<span style="color:var(--bad)">not read (${esc(d.lineups.error ?? "")})</span>`}</span>` : "",
     why ? `<span>${why}</span>` : "",
   ].join("");
   const gid = $("#pr-game").value, stat = $("#pr-stat").value, q = $("#pr-search").value.trim().toLowerCase();
@@ -2427,7 +2428,7 @@ function renderProps() {
     const m = p.model;
     const ecls = p.edge == null ? "" : Math.abs(p.edge) < 0.03 ? "" : p.edge > 0 ? "pos" : "neg";
     const side = m ? ((m.ev_over ?? -9) >= (m.ev_under ?? -9) ? "over" : "under") : null;
-    const main = `<tr class="main" data-id="${esc(id)}"><td class="name">${plink(p.player_id, p.name)}<small>${abbr(p.team)}${m?.status && !["available", "unknown"].includes(m.status) ? " " + esc(m.status) : ""}${m?.games != null && m.games < 5 ? ` <span class="flag down" title="The minutes model has only ${m.games} games of this player to go on (this season and last), so his minutes are a guess">${m.games} games</span>` : ""}</small></td>
+    const main = `<tr class="main" data-id="${esc(id)}"><td class="name">${plink(p.player_id, p.name)}<small>${abbr(p.team)}${m?.status && !["available", "unknown"].includes(m.status) ? " " + esc(m.status) : ""}${m?.games != null && m.games < 5 ? ` <span class="flag down" title="The minutes model has only ${m.games} games of this player to go on (this season and last), so his minutes are a guess">${m.games} games</span>` : ""}${m?.lineup && m.lineup.startsWith("moved") ? ` <span class="flag ${m.lineup.includes("into") ? "up" : "down"}" title="Confirmed starting lineup: ${esc(m.lineup)}, so his projected minutes were moved ${m.lineup.includes("into") ? "up" : "down"}">${m.lineup.includes("into") ? "new starter" : "to bench"}</span>` : ""}</small></td>
       <td class="l">${esc(gameLabel(p.game_id))}</td><td class="l">${esc(d.stat_labels?.[p.stat] ?? p.stat)}</td><td>${fmt(p.line)}</td>
       <td>${pct(p.fair_over)}%</td><td>${m ? pct(p.mpo) + "%" : "—"}</td>
       <td class="edge ${ecls}">${p.edge == null ? "—" : signed(100 * p.edge, 1)}</td><td>${m ? fmt(m.mean) : "—"}</td>
