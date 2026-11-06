@@ -34,6 +34,7 @@ import pandas as pd
 from ..models import props as PM
 from ..models.ratings import model_season
 from ..providers import odds_api as OA
+from ..providers import nba_lineups as NL
 from ..util import utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,13 @@ MIN_PULL = 0.5        # keep this share of the minutes model's difference from h
 MIN_CAP = 4.0         # and never more than this many minutes away from it
 RATE_LONG = 0.15      # share of each per-minute rate taken from his rate over this season and last
 ANCHOR_MIN_GAMES = 5
+# confirmed starting lineups (providers.nba_lineups): a player confirmed in the starting five who has mostly
+# come off the bench lately (started under half his last 5 games) gets LINEUP_UP more minutes; one confirmed
+# out of it after mostly starting gets LINEUP_DOWN fewer. Fitted on 1,446 player-games of 2026-27 (players
+# moved into the lineup played 5.3 more minutes than projected, players moved out 8.0 fewer): minutes error
+# fell from 4.72 to 4.51 overall and from 7.4 to 5.5 for those players. Only confirmed lineups count.
+LINEUP_UP = 5.0
+LINEUP_DOWN = 6.0
 STAT_LABEL = {"pts": "Points", "reb": "Rebounds", "ast": "Assists", "fg3m": "Threes", "pra": "Pts+Reb+Ast",
               "pr": "Pts+Reb", "pa": "Pts+Ast", "ra": "Reb+Ast"}
 
@@ -206,7 +214,7 @@ def player_history(conn, season: str) -> dict:
     """player_id -> {"m5": last-5 minutes, "games": n, "rate": {stat: per-minute rate}} from this season and last."""
     from ..models.game_model import prev_season
     df = pd.read_sql_query(
-        """SELECT s.player_id, g.game_date, s.seconds / 60.0 AS m, s.pts, s.oreb + s.dreb AS reb, s.ast, s.fg3m
+        """SELECT s.player_id, s.team_id, s.started, g.game_date, s.seconds / 60.0 AS m, s.pts, s.oreb + s.dreb AS reb, s.ast, s.fg3m
            FROM player_game_stats s JOIN games g ON g.game_id = s.game_id
            WHERE g.season_id IN (?, ?) AND g.season_type = 'regular' AND g.status = 'final' AND s.seconds > 0""",
         conn, params=[season, prev_season(season)])
@@ -218,12 +226,14 @@ def player_history(conn, season: str) -> dict:
     for pid, h in df.sort_values("game_date").groupby("player_id"):
         mins = h["m"].sum()
         out[int(pid)] = {"m5": float(h["m"].tail(5).mean()), "games": int(len(h)),
+                         "st5": float(h["started"].tail(5).fillna(0).mean()), "team": int(h["team_id"].iloc[-1]),
                          "rate": {k: float((h[k].sum() + PM.PRIOR_MIN * lg[k]) / (mins + PM.PRIOR_MIN)) for k in base}}
     return out
 
 
-def anchor_inputs(inputs: dict, hist: dict) -> dict:
-    """Pull each player's minutes toward his last 5 games and his per-minute rates toward his longer record."""
+def anchor_inputs(inputs: dict, hist: dict, lineups: dict = None) -> dict:
+    """Pull each player's minutes toward his last 5 games and his per-minute rates toward his longer record,
+    then adjust minutes for a confirmed change of role in the starting lineup."""
     out = {}
     for key, x in inputs.items():
         h = hist.get(key[1])
@@ -231,12 +241,22 @@ def anchor_inputs(inputs: dict, hist: dict) -> dict:
             out[key] = x
             continue
         m = h["m5"] + float(np.clip(MIN_PULL * (x["min"] - h["m5"]), -MIN_CAP, MIN_CAP))
+        role = None
+        lu = (lineups or {}).get((key[0], h.get("team")))
+        if lu and lu["status"] == "confirmed" and "st5" in h:
+            starts = key[1] in lu["starters"]
+            if starts and h["st5"] < 0.5:
+                m, role = m + LINEUP_UP, "moved into the starting lineup"
+            elif not starts and h["st5"] >= 0.5:
+                m, role = m - LINEUP_DOWN, "moved out of the starting lineup"
+            else:
+                role = "confirmed starter" if starts else "confirmed bench"
         m = float(np.clip(m, 1.0, 48.0))
         shift = m - x["min"]
         base = {k: (1 - RATE_LONG) * x["rates"][k] + RATE_LONG * h["rate"][k] for k in ("pts", "reb", "ast", "fg3m")}
         rates = {s: sum(base[p] for p in parts) for s, parts in PM.STATS.items()}
-        out[key] = {**x, "min": m, "p10": min(x["p10"] + shift, m), "p90": max(x["p90"] + shift, m), "rates": rates,
-                    "model_min": x["min"]}
+        out[key] = {**x, "min": m, "p10": max(0.0, min(x["p10"] + shift, m)), "p90": max(x["p90"] + shift, m),
+                    "rates": rates, "model_min": x["min"], **({"lineup": role} if role else {})}
     return out
 
 
@@ -260,7 +280,8 @@ def compare(rows: list, inputs: dict, disp: dict) -> list:
                       "edge_over": round(po_np - fair_o, 4) if po_np is not None else None,
                       "ev_over": round(po * (dec_o - 1) - pu, 4) if dec_o else None,
                       "ev_under": round(pu * (dec_u - 1) - po, 4) if dec_u else None,
-                      "status": x["status"], "games": x.get("games")}
+                      "status": x["status"], "games": x.get("games"),
+                      **({"lineup": x["lineup"]} if x.get("lineup") else {})}
         out.append(r)
     return out
 
@@ -346,6 +367,11 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
     cal = calibration(conn, m)
     from ..ingest.update import today_et
     now = datetime.now(timezone.utc)
+    try:                                   # starting lineups first: free, and they change the minutes below
+        lineup_status = NL.update(conn, today_et())
+    except Exception as exc:
+        log.warning("Lineups not read: %s", exc)
+        lineup_status = {"status": "error", "error": str(exc)[:200]}
     try:
         pulled = OA.pull(conn, games, _rosters(proj, conn), now=now, et_day=today_et().isoformat())
     except Exception as exc:
@@ -367,7 +393,12 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
     except Exception:
         log.exception("Player history for props failed; using the unanchored inputs")
         hist = {}
-    rows = compare(rows, anchor_inputs(model_inputs(proj, sims), hist), cal["shapes"])
+    try:
+        lineups = NL.latest(conn, set(upcoming))
+    except Exception:
+        log.exception("Reading stored lineups failed")
+        lineups = {}
+    rows = compare(rows, anchor_inputs(model_inputs(proj, sims), hist, lineups), cal["shapes"])
     if pulled["status"] == "stored":
         save_evals(conn, pulled["fetched_at"], rows)
     fetched = {r[0]: r[1] for r in conn.execute(
@@ -382,8 +413,10 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
         "model": {"season": cal["season"], "shapes": cal["shapes"],
                   "check": cal["check"]},
         "track_record": track_record(conn, season),
-        "budget": {"max_pulls_per_day": OA.MAX_PULLS_PER_DAY, "hours_between": OA.MIN_HOURS_BETWEEN,
-                   "daily_cap": OA.DAILY_CREDIT_CAP,
+        "lineups": lineup_status,
+        "budget": {"near_hours": OA.NEAR_HOURS, "repull_minutes": OA.REPULL_MINUTES,
+                   "daily_cap": OA.DAILY_CREDIT_CAP, "monthly_cap": OA.MONTHLY_CREDIT_CAP,
+                   "month_used": OA.spent(OA._state(conn), month=today_et().isoformat()[:7]),
                    "markets": len(OA.MARKETS), "reserve": OA.RESERVE_CREDITS},
     }
     write(out_dir / "props.json", payload)
