@@ -5,10 +5,11 @@ it is never written to the database or the site.
 
 Cost: listing events is free; each event's odds cost one credit per market
 returned (one region), and the game lines one credit per market for the
-whole slate. To stay inside a monthly plan, each Eastern day gets
-DAILY_CREDIT_CAP credits. Pulls are spread so the day's budget lasts until
-the first tip-off (never closer than MIN_HOURS_BETWEEN), only for games that
-have not started, and never when fewer than RESERVE_CREDITS remain.
+whole slate. Each game is pulled once on its game day (from 8 AM Eastern),
+then about hourly in the last NEAR_HOURS before tip-off (plan_pull); only the
+games that are due are pulled. NBA pulls stay within DAILY_CREDIT_CAP a day
+and MONTHLY_CREDIT_CAP a month, and stop when fewer than RESERVE_CREDITS
+remain on the shared key.
 """
 import os
 import re
@@ -37,10 +38,15 @@ LEGAL_BOOKS = {
 # theScore Bet / ESPN BET, Caesars, Fanatics). The other legal books still count toward the market's fair
 # chance and line, because more books give a sharper read of the market, but are never offered as a place to bet.
 BET_BOOKS = {"fanduel", "espnbet", "thescore", "williamhill_us", "caesars", "fanatics"}
-MAX_PULLS_PER_DAY = 8
-MIN_HOURS_BETWEEN = 1.25          # never closer than this
-MAX_HOURS_BETWEEN = 5.0           # on big slates, save a pull for the afternoon injury news
-DAILY_CREDIT_CAP = 300            # at most ~9,000 a month; the 20,000-credit key is shared with the NHL and NFL projects
+# When odds are pulled (since Nov 6, 2026): each game gets one pull on its game day once it is within
+# LOOKAHEAD_HOURS (the morning pull), then one every REPULL_MINUTES during the last NEAR_HOURS before tip-off,
+# when injury news and starting lineups land and lines move most. Only the games that are due are pulled,
+# so a pull costs about 8 credits per game plus 3 for the game lines.
+NEAR_HOURS = 4.0
+REPULL_MINUTES = 55               # "hourly": the site runs every 15 minutes, so this lands about once an hour
+MIN_TIP_MINUTES = 5               # no pull for a game about to start
+DAILY_CREDIT_CAP = 600            # NBA's share of the key that day; when short, the games tipping soonest go first
+MONTHLY_CREDIT_CAP = 10500        # NBA's share per calendar month; the 20,000-credit key is shared with NHL and NFL
 LOOKAHEAD_HOURS = 15               # from ~8 AM ET this covers the whole evening slate
 RESERVE_CREDITS = 1500
 EARLIEST_ET_HOUR = 8               # no pulls before 8 AM Eastern: overnight lines are thin and it wastes a pull
@@ -93,35 +99,64 @@ def pull_cost(n_games: int) -> int:
     return n_games * len(MARKETS) + len(GAME_MARKETS)
 
 
-def should_pull(state: dict, now: datetime, upcoming: list, et_day: str):
-    """(yes/no, reason). `upcoming`: tip times (UTC datetimes) of games not yet started."""
+def spent(state: dict, et_day: str = None, month: str = None) -> float:
+    """Credits NBA pulls used on one Eastern day, or in one calendar month ("YYYY-MM")."""
+    ps = state.get("pulls", [])
+    if et_day is not None:
+        ps = [p for p in ps if p.get("et_day") == et_day]
+    if month is not None:
+        ps = [p for p in ps if (p.get("et_day") or "")[:7] == month]
+    return float(sum(p.get("cost", pull_cost(p.get("games", 0))) for p in ps))
+
+
+def plan_pull(state: dict, now: datetime, upcoming: dict, last_pulled: dict, et_day: str):
+    """Which games to pull now: (game_ids, reason).
+
+    upcoming: game_id -> tip time (UTC datetime) for games not yet started.
+    last_pulled: game_id -> when its props were last pulled (UTC datetime), if ever.
+    """
     if not upcoming:
-        return False, "no games in the next hours"
+        return [], "no games in the next hours"
     if now.astimezone(ET).hour < EARLIEST_ET_HOUR:
-        return False, f"odds are pulled from {EARLIEST_ET_HOUR} AM Eastern"
-    soon = [t for t in upcoming if now < t <= now + timedelta(hours=LOOKAHEAD_HOURS)]
-    if not soon:
-        return False, "no games in the next hours"
-    today = [p for p in state.get("pulls", []) if p.get("et_day") == et_day]
-    if len(today) >= MAX_PULLS_PER_DAY:
-        return False, f"already pulled {len(today)} times today"
-    used = sum(p.get("cost", pull_cost(p.get("games", 0))) for p in today)
-    cost = pull_cost(len(soon))
-    left = (DAILY_CREDIT_CAP - used) // max(cost, 1)
-    if left < 1:
-        return False, f"today's odds budget is used ({int(used)} of {DAILY_CREDIT_CAP} credits)"
-    if today:
-        last = max(_parse(p["at"]) for p in today)
-        # spread the pulls that are left over the time until the first game starts
-        hours_to_tip = (min(soon) - now).total_seconds() / 3600
-        gap = max(MIN_HOURS_BETWEEN, min(MAX_HOURS_BETWEEN, hours_to_tip / left))
-        if now - last < timedelta(hours=gap):
-            return False, f"last pull {((now - last).total_seconds() / 3600):.1f} hours ago; next in about " \
-                          f"{max(0, gap - (now - last).total_seconds() / 3600) * 60:.0f} minutes"
+        return [], f"odds are pulled from {EARLIEST_ET_HOUR} AM Eastern"
     rem = state.get("remaining")
     if rem is not None and rem < RESERVE_CREDITS:
-        return False, f"only {int(rem)} credits left this month"
-    return True, "ok"
+        return [], f"only {int(rem)} credits left this month"
+    day_start = now.astimezone(ET).replace(hour=0, minute=0, second=0, microsecond=0)
+    due, waits = [], []
+    for gid, tip in upcoming.items():
+        to_tip = tip - now
+        if to_tip <= timedelta(minutes=MIN_TIP_MINUTES) or to_tip > timedelta(hours=LOOKAHEAD_HOURS):
+            continue
+        last = last_pulled.get(gid)
+        if last is None or last < day_start:
+            due.append((tip, gid))                                    # first pull of its game day
+        elif to_tip <= timedelta(hours=NEAR_HOURS):
+            ready = last + timedelta(minutes=REPULL_MINUTES)
+            (due.append((tip, gid)) if now >= ready else waits.append(ready))
+        else:
+            waits.append(max(last + timedelta(minutes=REPULL_MINUTES), tip - timedelta(hours=NEAR_HOURS)))
+    if not due:
+        nxt = min(waits) if waits else None
+        return [], ("next pull in about %d minutes" % max(1, (nxt - now).total_seconds() // 60)) if nxt else \
+            "no games in the next hours"
+    due.sort()
+    left_day = DAILY_CREDIT_CAP - spent(state, et_day=et_day)
+    left_month = MONTHLY_CREDIT_CAP - spent(state, month=et_day[:7])
+    left = min(left_day, left_month)
+    n = 0
+    while n < len(due) and pull_cost(n + 1) <= left:                  # soonest tips first when short
+        n += 1
+    if n == 0:
+        which = "today's" if left_day <= left_month else "this month's"
+        return [], f"{which} NBA odds budget is used"
+    return [gid for _, gid in due[:n]], "ok" if n == len(due) else f"budget covers {n} of {len(due)} due games"
+
+
+def last_pulled(conn) -> dict:
+    rows = conn.execute("""SELECT game_id, MAX(fetched_at) FROM odds_snapshots
+                           WHERE source = ? AND player_id IS NOT NULL GROUP BY game_id""", (SOURCE,)).fetchall()
+    return {g: _parse(t) for g, t in rows if t}
 
 
 def match_event(ev: dict, games: list, teams: dict):
@@ -207,8 +242,13 @@ def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = N
     now = now or datetime.now(timezone.utc)
     upcoming = [g for g in games if g.get("tip_utc") and _parse(g["tip_utc"]) > now and g.get("status") == "scheduled"]
     state = _state(conn)
-    ok, why = should_pull(state, now, [_parse(g["tip_utc"]) for g in upcoming], et_day)
-    if not ok and not force:
+    if force:
+        due_ids = [g["game_id"] for g in upcoming if _parse(g["tip_utc"]) <= now + timedelta(hours=LOOKAHEAD_HOURS)]
+        why = "forced"
+    else:
+        due_ids, why = plan_pull(state, now, {g["game_id"]: _parse(g["tip_utc"]) for g in upcoming},
+                                 last_pulled(conn), et_day)
+    if not due_ids:
         out = {"status": "skipped", "reason": why, "remaining": state.get("remaining")}
         # once a day, confirm the key works with the free events call (costs no credits)
         if state.get("key_checked") != et_day:
@@ -230,13 +270,14 @@ def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = N
     before = remaining if remaining is not None else state.get("remaining")
     fetched_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     stored, matched, unmatched_names, unmatched_events, errors = 0, 0, set(), [], []
+    due_set = set(due_ids)
     for ev in events:
         g = match_event(ev, upcoming, teams)
         if g is None:
             if _parse(ev["commence_time"]) <= now + timedelta(hours=LOOKAHEAD_HOURS) and _parse(ev["commence_time"]) > now:
                 unmatched_events.append(f"{ev.get('away_team')} at {ev.get('home_team')}")
             continue
-        if _parse(g["tip_utc"]) > now + timedelta(hours=LOOKAHEAD_HOURS):
+        if g["game_id"] not in due_set:                 # only the games that are due this run
             continue
         try:
             payload, rem = _get(f"/events/{ev['id']}/odds", key, {
@@ -261,7 +302,7 @@ def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = N
         stored += len(rows)
     # game lines for the same games: one call, one credit per market
     game_rows = 0
-    soon = [g for g in upcoming if _parse(g["tip_utc"]) <= now + timedelta(hours=LOOKAHEAD_HOURS)]
+    soon = [g for g in upcoming if g["game_id"] in due_set]
     if soon and not (errors and not stored):
         try:
             evs, rem = _get("/odds", key, {"regions": REGION, "markets": ",".join(GAME_MARKETS),
@@ -280,7 +321,7 @@ def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = N
         except Exception as exc:
             errors.append(f"game lines: {exc}")
     conn.commit()
-    state["pulls"] = state.get("pulls", [])[-30:]
+    state["pulls"] = state.get("pulls", [])[-600:]      # enough to total a month
     cost = (before - remaining) if before is not None and remaining is not None and before >= remaining \
         else pull_cost(matched)
     state["pulls"].append({"at": fetched_at, "et_day": et_day, "games": matched, "rows": stored, "game_rows": game_rows,
@@ -288,5 +329,6 @@ def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = N
     state["remaining"] = remaining
     _save_state(conn, state, fetched_at)
     return {"status": "error" if errors and not stored else "stored", "fetched_at": fetched_at, "games": matched,
+            "plan": why,
             "rows": stored, "game_rows": game_rows, "remaining": remaining, "unmatched_players": sorted(unmatched_names)[:40],
             "unmatched_events": unmatched_events, "errors": errors[:5]}
