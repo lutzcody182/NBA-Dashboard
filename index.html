@@ -543,7 +543,7 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
     <p class="sub">Bets where the model and the market disagree enough to pay at the best price at a state-licensed US sportsbook, sized in units (1 unit = 1% of your bankroll). The page rebuilds every 15 minutes on game days with the latest injury news, and odds are pulled about every 75 to 90 minutes from late morning until tip-off. Each pick is locked the first time it qualifies on fresh prices, at that price and book, and every pick is graded after the game. Lines move: check the price at your book before betting. Tap the circle next to a pick once you have placed it: it turns into a green check, so you never bet the same pick twice. Your marks are saved in this browser, and any bet where you recorded the odds you got counts as placed on every device.</p>
     <div class="bt-warn" id="bt-warn"></div>
     <div class="controls"><div class="seg" role="group" aria-label="Which bets" id="bt-size">
-      <button data-size="1u" aria-pressed="true">Bets of 1+ units</button><button data-size="all" aria-pressed="false">All bets</button>
+      <button data-size="1u" aria-pressed="true" title="Bets whose full (uncapped) stake is 1 unit or more">Strongest bets</button><button data-size="all" aria-pressed="false">All bets</button>
     </div><span class="count" id="bt-size-note"></span></div>
     <div class="bt-cards" id="bt-cards"></div>
     <h3 class="sec" id="bt-today-title">Today's picks</h3>
@@ -2122,7 +2122,7 @@ function recState(b) {
 }
 function recRows() {
   if (!S.bets) return [];
-  const big = (b) => BV.size === "all" || b.units >= 1;
+  const big = (b) => BV.size === "all" || (b.units_full ?? b.units) >= 1;
   return fromCols(S.bets.ledger).filter(big);
 }
 const recNeeds = (b, pend) => recState(b) !== "active" && placeState(b, pend) === "pending" && b.game_date >= etDate(-NEEDS_DAYS);
@@ -2184,7 +2184,7 @@ function renderRecs() {
     <div class="controls">
       <div class="seg wrap" role="group" aria-label="Show" id="rc-f">${F.map(([k, l]) => `<button data-f="${k}" aria-pressed="${RC.f === k}">${l}</button>`).join("")}</div>
       <label class="ctl">Market<select id="rc-mk"><option value="">All markets</option><option value="prop" ${RC.mk === "prop" ? "selected" : ""}>All player props</option>${Object.entries(MARKET_LABEL).map(([k, l]) => `<option value="${k}" ${RC.mk === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
-      <div class="seg" role="group" aria-label="Which bets" id="rc-size"><button data-size="1u" aria-pressed="${BV.size === "1u"}">1+ units</button><button data-size="all" aria-pressed="${BV.size === "all"}">All sizes</button></div>
+      <div class="seg" role="group" aria-label="Which bets" id="rc-size"><button data-size="1u" aria-pressed="${BV.size === "1u"}" title="Bets whose full (uncapped) stake is 1 unit or more">Strongest bets</button><button data-size="all" aria-pressed="${BV.size === "all"}">All sizes</button></div>
     </div>
     ${RC.f === "needs" && list.length ? `<p class="pr-note" style="margin:0 0 8px">These ended in the last ${NEEDS_DAYS} days (no longer recommended, or the game started) and you haven't said whether you bet them. <button type="button" class="ov-btn" id="rc-allnot">Mark all ${list.length} as Not placed</button></p>` : ""}
     ${list.length ? `<div class="table-wrap"><table class="rctab"><thead>${REC_HEAD}</thead><tbody>${shown.map((b) => recRowHtml(b, pend)).join("")}</tbody></table></div>${list.length > 60 ? `<button type="button" class="ov-btn" id="rc-more" style="margin-top:8px">${RC.all ? "Show fewer" : `Show all ${list.length}`}</button>` : ""}`
@@ -2293,16 +2293,16 @@ function renderBets() {
   const d = S.bets;
   if (!d) { $("#bt-games").innerHTML = `<div class="empty">Bets have not been published yet.</div>`; return; }
   const st = d.settings;
-  const big = (b) => BV.size === "all" || b.units >= 1;
+  const big = (b) => BV.size === "all" || (b.units_full ?? b.units) >= 1;
   document.querySelectorAll("#bt-size button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.size === BV.size)));
-  $("#bt-warn").innerHTML = `The model has no live track record yet, so every pick uses a chance that leans on the market: ${Math.round(100 * (st?.blend ?? 0.35))}% the model's, ${Math.round(100 * (1 - (st?.blend ?? 0.35)))}% the market's, and stakes are a quarter of the Kelly amount. Treat this as a test of the model, not proven advice: the ledger below and the "beat the closing line" rate are how you'll know whether it has an edge. Bet only what you can afford to lose. If gambling stops being fun, call or text 1-800-GAMBLER.`;
+  $("#bt-warn").innerHTML = `The model has no live track record yet, so every pick uses a chance that leans on the market: ${Math.round(100 * (st?.blend ?? 0.35))}% the model's, ${Math.round(100 * (1 - (st?.blend ?? 0.35)))}% the market's, and stakes are a quarter of the Kelly amount${st?.max_units != null ? `, capped at ${st.max_units} units while the model is unproven` : ""}.${st?.prop_overs === false ? " <b>Player prop overs are paused</b>: through the first 383 graded bets they lost in every band of model-vs-market difference, so only unders and game lines are recommended for now." : ""} Treat this as a test of the model, not proven advice: the ledger below and the "beat the closing line" rate are how you'll know whether it has an edge. Bet only what you can afford to lose. If gambling stops being fun, call or text 1-800-GAMBLER.`;
   const card = (k, v, s, cls = "") => `<div class="bt-card"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s}</div></div>`;
   const ledAll = fromCols(d.ledger);
   const pend = ovReconcile(ledAll);
   const led = ledAll.filter(big);
   const sm = betSummary(led);
   const hidden = ledAll.length - led.length;
-  $("#bt-size-note").textContent = BV.size === "all" ? `All ${ledAll.length} bets on the ledger` : `${led.length} bets of 1+ units shown; ${hidden} smaller bets hidden (still tracked)`;
+  $("#bt-size-note").textContent = BV.size === "all" ? `All ${ledAll.length} bets on the ledger` : `${led.length} strongest bets shown (full stake of 1+ units before the ${st?.max_units ?? 0.5}-unit cap); ${hidden} smaller bets hidden (still tracked)`;
   const open = led.filter((b) => b.status === "open");
   $("#bt-cards").innerHTML = [
     card("Record", sm.graded ? `${sm.won}-${sm.lost}${sm.push ? "-" + sm.push : ""}` : "—", `${sm.graded ?? 0} graded of ${sm.bets ?? 0}`),
@@ -2359,7 +2359,7 @@ function renderBets() {
   $("#bt-rules").innerHTML = `<p class="pr-note"><strong>Books:</strong> picks and best prices come only from ${esc((st.bet_books ?? []).map(bookName).filter((v, i, a) => a.indexOf(v) === i).join(", ") || "FanDuel, theScore Bet, Caesars, Fanatics")}. The other state-licensed US books (DraftKings, BetMGM, BetRivers and so on) still count toward the market's fair chance, because more books give a sharper read of the market, but are never shown as a place to bet. Offshore books in the feed are ignored.</p>
     <p class="pr-note"><strong>Chances:</strong> props use the props model; moneylines use the simulation's win chance; spreads and totals use a normal curve around the simulated margin and total, as wide as the simulation's misses on last season's replay. The chance used for a bet is ${Math.round(100 * st.blend)}% model and ${Math.round(100 * (1 - st.blend))}% market.</p>
     <p class="pr-note"><strong>A bet needs:</strong> the model rating the side ${Math.round(100 * st.min_gap)} to ${Math.round(100 * st.max_gap)} points above the market (bigger gaps usually mean news the model missed), an expected return of ${Math.round(100 * st.min_ev)}%+ at the best price, ${st.min_books}+ legal books quoting it, a price between ${st.price_range[0]} and +${st.price_range[1]}, and for props a player with 5+ games of history who isn't questionable or doubtful.</p>
-    <p class="pr-note"><strong>Stakes:</strong> ${Math.round(100 * st.kelly)}% of the Kelly stake, 1 unit = ${st.unit_pct}% of bankroll, rounded to 0.25 units, at most ${st.max_units} units a bet and ${st.max_game_units} a game (a game's stakes are scaled down to fit; no qualifying bet is dropped)${st.max_day_picks != null ? `, and ${st.max_day_picks} bets or ${st.max_day_units} units a day` : ", with no daily limit"}. One prop per player and one side bet (moneyline or spread) per game, since those move together.</p>
+    <p class="pr-note"><strong>Stakes:</strong> ${Math.round(100 * st.kelly)}% of the Kelly stake, 1 unit = ${st.unit_pct}% of bankroll, rounded to 0.25 units, at most ${st.max_units} units a bet${st.full_max_units ? ` for now (the full stake, up to ${st.full_max_units}, is still worked out and decides which picks count as "strongest")` : ""} and ${st.max_game_units} a game (a game's stakes are scaled down to fit; no qualifying bet is dropped)${st.max_day_picks != null ? `, and ${st.max_day_picks} bets or ${st.max_day_units} units a day` : ", with no daily limit"}. One prop per player and one side bet (moneyline or spread) per game, since those move together.</p>
     <p class="pr-note">Not financial or betting advice.</p>`;
 }
 
