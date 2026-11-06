@@ -28,11 +28,17 @@ HEADERS = {
 SOURCE = "nba_daily_lineups"
 
 
-def fetch(day: date, session=None) -> dict:
+def fetch(day: date, session=None, tries: int = 2) -> dict:
+    """stats.nba.com is slow at times from GitHub's servers: allow 30 seconds and one retry."""
     s = session or requests
-    r = s.get(URL.format(d=day.strftime("%Y%m%d")), headers=HEADERS, timeout=20)
-    r.raise_for_status()
-    return r.json()
+    for i in range(tries):
+        try:
+            r = s.get(URL.format(d=day.strftime("%Y%m%d")), headers=HEADERS, timeout=30)
+            r.raise_for_status()
+            return r.json()
+        except requests.RequestException:
+            if i == tries - 1:
+                raise
 
 
 def parse(payload: dict) -> list:
@@ -84,8 +90,9 @@ def update(conn, day: date, session=None, now_iso: str = None) -> dict:
             continue
         matched += 1
         for tid, t in g["teams"].items():
-            t = {**t, "starters": [p for p in t["starters"] if p in known]}   # a player new to the database waits a run
-            if len(t["starters"]) < 5:
+            # a starter not in the database yet (a new signing) is left out; the others still tell us who starts
+            t = {**t, "starters": [p for p in t["starters"] if p in known]}
+            if not t["starters"]:
                 continue
             confirmed += t["status"] == "confirmed"
             old = have.get((gid, tid))
