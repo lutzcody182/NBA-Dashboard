@@ -129,3 +129,17 @@ def test_track_states(tmp_path):
     assert tuple(conn.execute("SELECT rec_state, end_reason FROM bets WHERE player_id=7 AND game_id='g1'").fetchone()) == \
         ("expired", "no longer offered by enough legal books")
     assert B.track(conn, [], [], [], [], games, "2026-11-03T20:00:00Z") == {}      # nothing priced: nothing changes
+
+
+def test_stake_cap_and_prop_overs_paused():
+    c = B._candidate("prop", "g", "under", 20.5, 120, "fanduel", 0.62, 0.53, 0.0, 5, player_id=7, stat="pts")
+    assert c is not None and c["units"] == B.MAX_UNITS == 0.5 and c["units_full"] > c["units"]
+    row = {"game_id": "g", "player_id": 7, "stat": "pts", "line": 20.5, "fair_over": 0.40,
+           "books": [{"book": b} for b in ("fanduel", "draftkings", "betmgm")],
+           "best_over": {"price": 140, "book": "fanduel"}, "best_under": {"price": -170, "book": "fanduel"},
+           "model": {"p_over": 0.50, "p_under": 0.50, "games": 20, "status": "available", "mean": 20, "min": 30}}
+    assert B.PROP_OVERS is False
+    assert B.prop_candidates([row]) == []                # the model likes the over here, but overs are paused
+    row["fair_over"] = 0.58                              # now the model likes the under: still recommended
+    out = B.prop_candidates([{**row, "best_under": {"price": 140, "book": "fanduel"}}])
+    assert [c["side"] for c in out] == ["under"] and out[0]["units"] <= 0.5
