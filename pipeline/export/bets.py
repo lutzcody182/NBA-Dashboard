@@ -21,10 +21,11 @@ How much to trust the model
     * at least MIN_BOOKS legal books quoting it (they all set the market's fair chance), and a price at one
       of the books you bet at (odds_api.BET_BOOKS: FanDuel, theScore Bet / ESPN BET, Caesars, Fanatics)
     * props: the player has 5+ games of history and is not listed as
-      questionable or doubtful
+      questionable or doubtful; unders only while PROP_OVERS is off (paused Nov 6, 2026)
 Stakes
   A quarter of the Kelly stake for the blended chance, where 1 unit = 1% of
-  bankroll, rounded to 0.25 units, at most MAX_UNITS per bet and
+  bankroll, rounded to 0.25 units, at most MAX_UNITS per bet (the uncapped stake, up to
+  FULL_MAX_UNITS, is saved as units_full to rank picks) and
   MAX_GAME_UNITS per game (a game's stakes are scaled down to fit, never
   below 0.25 units, and no qualifying bet is dropped). One prop per player,
   and one side bet (moneyline or spread) per game. No daily limit: every bet
@@ -65,7 +66,10 @@ MIN_GAP = 0.02
 MIN_BOOKS = 3
 KELLY = 0.25
 UNIT_PCT = 1.0
-MAX_UNITS = 1.5
+MAX_UNITS = 0.5          # stake cap while the model is unproven (was 1.5 until Nov 6, 2026); the uncapped
+FULL_MAX_UNITS = 1.5     # stake is still worked out (up to 1.5) and saved as units_full, to rank the strongest picks
+PROP_OVERS = False       # prop overs paused Nov 6, 2026: through 383 graded bets and 7,350 graded lines they lost in every
+                         # band of model-vs-market difference (overs hit 46.6% vs the market's 49.7%); unders stay
 MAX_GAME_UNITS = 3.0
 MAX_DAY_PICKS = None      # no daily limit on bets (was 15)
 MAX_DAY_UNITS = None      # no daily limit on units (was 12)
@@ -106,7 +110,8 @@ MARKET_ORDER = ("pts", "reb", "ast", "fg3m", "pra", "pr", "pa", "ra", "moneyline
 # What you actually got, when it differs from the recommendation (set through an override,
 # pipeline/overrides.py). Results and units are graded at these; the recommended price, line and
 # book are kept as they were, and closing-line value still measures the recommended pick.
-TAKEN_COLUMNS = (("taken_price", "INTEGER"), ("taken_line", "REAL"), ("taken_book", "TEXT"), ("taken_at", "TEXT"))
+TAKEN_COLUMNS = (("taken_price", "INTEGER"), ("taken_line", "REAL"), ("taken_book", "TEXT"), ("taken_at", "TEXT"),
+                 ("units_full", "REAL"))
 # Where each recommendation stands now (track()): 'active' while the latest prices still recommend it,
 # 'expired' once they stop (with the reason and when), 'started' at tip-off. Nothing is deleted.
 STATE_COLUMNS = (("rec_state", "TEXT"), ("state_at", "TEXT"), ("ended_at", "TEXT"), ("end_reason", "TEXT"),
@@ -193,13 +198,13 @@ def game_probs(sim: dict, market: str, line: float, report: dict):
 
 # ---------------------------------------------------------------- candidates
 
-def kelly_units(p: float, price: int) -> float:
+def kelly_units(p: float, price: int, cap: float = None) -> float:
     b = PM.decimal(price) - 1
     f = (p * b - (1 - p)) / b
     if f <= 0:
         return 0.0
     u = KELLY * f * 100 / UNIT_PCT
-    u = min(MAX_UNITS, round(u * 4) / 4)
+    u = min(MAX_UNITS if cap is None else cap, round(u * 4) / 4)
     return u if u >= 0.25 else 0.0
 
 
@@ -214,12 +219,13 @@ def _candidate(kind, game_id, side, line, price, book, p_model, p_market, push, 
     ev = (1 - push) * (p * (PM.decimal(price) - 1) - (1 - p))
     if ev < MIN_EV:
         return None
-    units = kelly_units(p, price)
+    full = kelly_units(p, price, cap=FULL_MAX_UNITS)
+    units = min(full, MAX_UNITS)
     if units <= 0:
         return None
     return {"kind": kind, "game_id": game_id, "side": side, "line": line, "price": int(price), "book": book,
             "p_model": round(p_model, 4), "p_market": round(p_market, 4), "p_used": round(p, 4),
-            "ev": round(ev, 4), "units": units, "books": books, **extra}
+            "ev": round(ev, 4), "units": units, "units_full": full, "books": books, **extra}
 
 
 def prop_candidates(rows: list) -> list:
@@ -233,6 +239,8 @@ def prop_candidates(rows: list) -> list:
             continue
         n = len(r["books"])
         for side, p_mod, p_mkt in (("over", po, r["fair_over"]), ("under", 1 - po, 1 - r["fair_over"])):
+            if side == "over" and not PROP_OVERS:
+                continue
             best = r["best_over"] if side == "over" else r["best_under"]
             c = _candidate("prop", r["game_id"], side, r["line"], best["price"], best["book"], p_mod, p_mkt,
                            m.get("p_push", 0.0), n, player_id=r["player_id"], stat=r["stat"],
@@ -307,7 +315,8 @@ def select(cands: list) -> list:
 def lock(conn, picks: list, games: dict, now_iso: str) -> int:
     """Store picks not already on the ledger for that game, market and player. Returns how many were added."""
     settings = json.dumps({"blend": BLEND, "min_ev": MIN_EV, "max_gap": MAX_GAP, "kelly": KELLY,
-                           "max_units": MAX_UNITS, "max_game_units": MAX_GAME_UNITS})
+                           "max_units": MAX_UNITS, "max_game_units": MAX_GAME_UNITS,
+                           "prop_overs": PROP_OVERS})
     added = 0
     for c in picks:
         g = games.get(c["game_id"])
@@ -331,9 +340,9 @@ def lock(conn, picks: list, games: dict, now_iso: str) -> int:
             continue
         conn.execute(
             """INSERT INTO bets (created_at, game_id, kind, player_id, stat, side, line, price, book, p_model,
-                 p_market, p_used, ev, units, settings) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 p_market, p_used, ev, units, units_full, settings) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (now_iso, c["game_id"], c["kind"], c.get("player_id"), c.get("stat"), c["side"], c["line"], c["price"],
-             c["book"], c["p_model"], c["p_market"], c["p_used"], c["ev"], c["units"], settings))
+             c["book"], c["p_model"], c["p_market"], c["p_used"], c["ev"], c["units"], c.get("units_full"), settings))
         added += 1
     conn.commit()
     return added
@@ -568,13 +577,13 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
     cols = ["bet_id", "created_at", "game_id", "game_date", "home_team_id", "away_team_id", "tip_utc", "kind",
             "player_id", "player", "stat", "side", "line", "price", "book", "p_model", "p_market", "p_used", "ev",
             "units", "status", "result", "pnl", "close_fair", "clv", "home_score", "away_score",
-            "taken_price", "taken_line", "taken_book", "taken_at"] + [c for c, _ in STATE_COLUMNS]
+            "taken_price", "taken_line", "taken_book", "taken_at", "units_full"] + [c for c, _ in STATE_COLUMNS]
     led = ledger[cols].astype(object).where(pd.notna(ledger[cols]), None) if len(ledger) else ledger
     game_lines = [{k: v for k, v in t.items() if k != "sides"} | {"sides": list(t["sides"])} for t in table]
     payload = {
         "generated_at": utc_now_iso(), "season": season,
         "settings": {"blend": BLEND, "min_ev": MIN_EV, "min_gap": MIN_GAP, "max_gap": MAX_GAP, "min_books": MIN_BOOKS, "kelly": KELLY,
-                     "unit_pct": UNIT_PCT, "max_units": MAX_UNITS, "max_game_units": MAX_GAME_UNITS,
+                     "unit_pct": UNIT_PCT, "max_units": MAX_UNITS, "full_max_units": FULL_MAX_UNITS, "prop_overs": PROP_OVERS, "max_game_units": MAX_GAME_UNITS,
                      "max_day_picks": MAX_DAY_PICKS, "max_day_units": MAX_DAY_UNITS,
                      "price_range": [MIN_PRICE, MAX_PRICE], "legal_books": sorted(OA.LEGAL_BOOKS), "bet_books": sorted(OA.BET_BOOKS)},
         "current": picks, "candidates": len(cands), "added_this_run": added, "graded_this_run": graded,
