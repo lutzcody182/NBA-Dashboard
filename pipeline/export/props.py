@@ -404,12 +404,18 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
     fetched = {r[0]: r[1] for r in conn.execute(
         f"SELECT game_id, MAX(fetched_at) FROM odds_snapshots WHERE source=? AND game_id IN "
         f"({','.join('?' * len(upcoming)) or 'NULL'}) GROUP BY game_id", [OA.SOURCE, *upcoming])} if upcoming else {}
+    try:
+        from . import factors as FX
+        factors = FX.build(conn, season, rows, proj)
+    except Exception:
+        log.exception("Matchup factors failed")
+        factors = {}
     state = OA._state(conn)
     payload = {
         "generated_at": utc_now_iso(), "season": season, "stat_labels": STAT_LABEL,
         "pull": {k: v for k, v in pulled.items() if k != "errors"} | {"errors": pulled.get("errors", [])},
         "credits_remaining": state.get("remaining"), "last_pulls": state.get("pulls", [])[-6:],
-        "odds_as_of": fetched, "props": rows,
+        "odds_as_of": fetched, "props": rows, "factors": factors,
         "model": {"season": cal["season"], "shapes": cal["shapes"],
                   "check": cal["check"]},
         "track_record": track_record(conn, season),
