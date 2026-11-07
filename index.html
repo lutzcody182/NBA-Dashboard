@@ -2439,7 +2439,7 @@ function renderProps() {
     const mine = new Set(S.bets?.settings?.bet_books ?? ["fanduel", "espnbet", "thescore", "williamhill_us", "caesars", "fanatics"]);
     const bk = [...p.books].sort((a, b) => mine.has(b.book) - mine.has(a.book)).map((b) => `<tr${mine.has(b.book) ? "" : ` style="opacity:.55" title="Used only to measure the market's fair chance; not a book you bet at"`}><td class="l">${esc(bookName(b.book))}${mine.has(b.book) ? "" : ` <small>(market only)</small>`}</td><td>${odds(b.over)}</td><td>${odds(b.under)}</td><td>${pct(b.fair_over)}%</td><td>${pct(b.hold)}%</td></tr>`).join("");
     const why = m ? `If he plays, the model expects about ${fmt(m.min)} minutes and ${fmt(m.mean)} ${esc((d.stat_labels?.[p.stat] ?? p.stat).toLowerCase())}. Over ${fmt(p.line)}: ${pct(m.p_over)}%, under: ${pct(m.p_under)}%${m.p_push > 0.001 ? `, push: ${pct(m.p_push)}%` : ""}.` : "No model number: the player isn't in the simulation (listed out, or projected for under 3 minutes).";
-    return main + `<tr class="pr-detail"><td colspan="${cols.length}"><p class="pr-note">${why}${p.other_lines?.length ? ` Other lines offered: ${p.other_lines.map((l) => fmt(l)).join(", ")}.` : ""}</p>
+    return main + `<tr class="pr-detail"><td colspan="${cols.length}"><p class="pr-note">${why}${p.other_lines?.length ? ` Other lines offered: ${p.other_lines.map((l) => fmt(l)).join(", ")}.` : ""}</p>${propFactors(p, d)}
       <table><thead><tr><th class="l">Book</th><th>Over</th><th>Under</th><th>Fair over</th><th>Margin</th></tr></thead><tbody>${bk}</tbody></table></td></tr>`;
   }).join("");
   const empty = (d.props ?? []).length ? "No props match these filters." : "No odds stored for upcoming games yet. Odds are pulled starting around noon Eastern on game days.";
@@ -2454,6 +2454,36 @@ function renderProps() {
   }));
   $("#pr-count").textContent = `${rows.length} props${rows.length > shown.length ? `, showing ${shown.length}` : ""}${hideNew && hidden ? ` (${hidden} hidden for players with under 5 games of history: rookies and players back from long absences, whose minutes the model can only guess)` : ""}. Sorted by the size of the difference by default; click a row for every book's prices.`;
   renderPropsTrack(); renderPropsModel();
+}
+const PROP_PARTS = { pts: ["pts"], reb: ["reb"], ast: ["ast"], fg3m: ["fg3m"], pra: ["pts", "reb", "ast"], pr: ["pts", "reb"], pa: ["pts", "ast"], ra: ["reb", "ast"] };
+const FX_STAT = { pts: "points", reb: "rebounds", ast: "assists", fg3m: "threes" };
+const FX_GROUP = { G: "guards", F: "forwards", C: "centers" };
+// Matchup factors for one prop: shown for context; the model number above already accounts for
+// teammates out, the opponent and schedule (these were tested and add little on top of it)
+function propFactors(p, d) {
+  const f = d.factors?.[`${p.game_id}|${p.player_id}`];
+  if (!f) return "";
+  const stats = (PROP_PARTS[p.stat] ?? [p.stat]).filter((s) => FX_STAT[s]);
+  const items = [];
+  for (const t of f.teammates_out ?? []) {
+    const cells = stats.map((s) => `${FX_STAT[s]} ${fmt(t.with[s])} → <strong>${fmt(t.without[s])}</strong>`).join(", ");
+    items.push(`<li><strong>${esc(t.name)} out</strong> (${fmt(t.minutes)} min a game): with him ${t.with.games} games, without him ${t.without.games}. Minutes ${fmt(t.with.min)} → <strong>${fmt(t.without.min)}</strong>; ${cells}.</li>`);
+  }
+  if (f.opponent) {
+    const o = f.opponent;
+    const cells = stats.map((s) => `${FX_STAT[s]} <span class="edge ${Math.abs(o[s]) < 0.03 ? "" : o[s] > 0 ? "pos" : "neg"}">${signed(100 * o[s], 0)}%</span>`).join(", ");
+    items.push(`<li><strong>${abbr(o.team_id)} against ${FX_GROUP[o.group]}</strong>${o.group_listed ? "" : " (position estimated from his stats)"}: per minute allowed vs league average, ${cells} <small>(${o.games} games this season, blended with last season)</small>.</li>`);
+  }
+  if (f.rebounds && stats.includes("reb")) {
+    const r = f.rebounds;
+    items.push(`<li><strong>Rebound chances</strong>: he grabs ${pct(r.share)}% of available rebounds while on the floor. This game projects ${fmt(r.game_chances)} chances (missed shots by both teams) against ${fmt(r.usual_chances)} in his recent games, about ${fmt(r.per_48_game)} vs ${fmt(r.per_48_usual)} rebounds per 48 minutes.</li>`);
+  }
+  if (f.threes && stats.includes("fg3m")) {
+    const t = f.threes, gap = t.made - t.expected;
+    items.push(`<li><strong>Expected threes</strong>: last ${t.games} games ${fmt(t.att)} attempts and ${fmt(t.made)} made a game (${t.pct == null ? "—" : pct(t.pct) + "%"}). At a steadier ${pct(t.pct_expected)}% (his recent shooting shrunk toward his longer record) that's ${fmt(t.expected)} a game${Math.abs(gap) >= 0.3 ? `, so he has been running <strong>${gap > 0 ? "hot" : "cold"}</strong>` : ""}.</li>`);
+  }
+  if (!items.length) return "";
+  return `<div class="pr-note" style="margin-top:6px"><strong>Matchup factors</strong> <small style="color:var(--muted)">for context: the model number already accounts for teammates out, the opponent and rest/travel</small><ul style="margin:4px 0 8px 18px;padding:0">${items.join("")}</ul></div>`;
 }
 function renderPropsTrack() {
   const t = S.props?.track_record ?? {};
