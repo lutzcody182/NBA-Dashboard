@@ -94,11 +94,49 @@ def message(bets: list, abbr: dict, names: dict) -> tuple:
     return title, "\n".join(lines)
 
 
-def send(topic: str, title: str, body: str, session=None) -> None:
+def send(topic: str, title: str, body: str, session=None, priority: str = "default", tags: str = "basketball") -> None:
     s = session or requests
     r = s.post(f"{SERVER}/{topic}", data=body.encode("utf-8"), timeout=20,
-               headers={"Title": title.encode("utf-8"), "Click": SITE, "Tags": "basketball", "Priority": "default"})
+               headers={"Title": title.encode("utf-8"), "Click": SITE, "Tags": tags, "Priority": priority})
     r.raise_for_status()
+
+
+def heartbeat(conn, notified: dict, topic=None, now_iso=None, session=None) -> dict:
+    """A quiet note after every run that sent no picks, so a silent phone means the runs stopped.
+
+    Low priority: it lands in the notification list without a sound or buzz."""
+    topic = topic if topic is not None else os.environ.get("NTFY_TOPIC", "").strip()
+    if not topic:
+        return {"status": "skipped", "reason": "no NTFY_TOPIC set"}
+    if (notified or {}).get("status") == "sent":
+        return {"status": "skipped", "reason": "picks were sent"}
+    now_iso = now_iso or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        active = conn.execute(
+            """SELECT COUNT(*), COALESCE(SUM(b.units), 0) FROM bets b JOIN games g ON g.game_id = b.game_id
+               WHERE b.status = 'open' AND COALESCE(b.rec_state, 'active') = 'active' AND g.tip_utc > ?""",
+            (now_iso,)).fetchone()
+    except Exception:
+        active = None
+    when = datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone(ET)
+    stamp = when.strftime("%-I:%M %p ET")
+    problem = (notified or {}).get("status") == "error"
+    title = f"Run done {stamp} · " + ("picks not sent" if problem else "no new picks")
+    lines = []
+    if active and active[0]:
+        lines.append(f"{active[0]} pick{'s' if active[0] != 1 else ''} still recommended ({float(active[1]):g} units), "
+                     "already sent earlier.")
+    elif active is not None:
+        lines.append("Nothing is recommended right now.")
+    if problem:
+        lines.append("New picks could not be sent this time; they will be retried next run.")
+    lines.append("Next check in about 15 minutes.")
+    try:
+        send(topic, title, "\n".join(lines), session, priority="low", tags="white_check_mark")
+    except Exception as exc:
+        log.warning("ntfy heartbeat failed: %s", exc)
+        return {"status": "error", "error": str(exc)}
+    return {"status": "sent"}
 
 
 def notify_new_bets(conn, topic=None, now_iso=None, session=None) -> dict:
