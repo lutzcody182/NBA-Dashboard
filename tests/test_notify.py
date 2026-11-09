@@ -87,3 +87,21 @@ def test_failed_send_is_retried_and_started_games_skipped():
 
 def test_no_topic_does_nothing():
     assert notify.notify_new_bets(db(), "", NOW)["status"] == "skipped"
+
+
+def test_heartbeat_when_no_picks_sent():
+    c = db()
+    s = FakeSession()
+    assert notify.heartbeat(c, {"status": "sent"}, TOPIC, NOW, s)["status"] == "skipped"
+    assert s.sent == []
+    assert notify.heartbeat(c, {"status": "nothing new"}, TOPIC, NOW, s)["status"] == "sent"
+    title, body = s.sent[-1][1], s.sent[-1][2]
+    assert title == "Run done 10:00 AM ET · no new picks" and "15 minutes" in body
+    # with the bet ledger's state columns, open picks are counted
+    c.execute("ALTER TABLE bets ADD COLUMN status TEXT")
+    c.execute("ALTER TABLE bets ADD COLUMN rec_state TEXT")
+    c.execute("UPDATE bets SET status = 'open', rec_state = 'active'")
+    notify.heartbeat(c, {"status": "nothing new"}, TOPIC, NOW, s)
+    assert s.sent[-1][2].startswith("1 pick still recommended (1 units)")
+    assert "picks not sent" in (notify.heartbeat(c, {"status": "error"}, TOPIC, NOW, s) and s.sent[-1][1])
+    assert notify.heartbeat(c, {}, "", NOW, s)["status"] == "skipped"
