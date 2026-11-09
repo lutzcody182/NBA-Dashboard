@@ -1,18 +1,17 @@
 name: Update NBA data
 
-# Runs on a schedule, or by hand from the Actions tab ("Run workflow").
+# Started every 15 minutes (8 AM to 12:45 AM Eastern) by an outside scheduler, the
+# "NBA update" job at cron-job.org, through GitHub's API, because GitHub's own
+# schedule often runs hours late or skips runs. Can also be run by hand from the
+# Actions tab ("Run workflow").
 # The database is kept as a file on a GitHub Release named "data-store",
 # replaced on every run, so the repo itself never fills up with data
 # commits. The page and its JSON are published straight to GitHub Pages.
 
 on:
   schedule:
-    # Times are UTC. Eastern is UTC-4 until early November, then UTC-5.
-    - cron: "17 9 * * *"           # ~5 AM ET: final box scores from last night
-    - cron: "4,34 12-14 * * *"     # ~8 AM to 10:35 AM ET, every 30 minutes (first odds and picks of the day)
-    - cron: "4,19,34,49 15-23 * * *"  # ~11 AM to 7:50 PM ET, every 15 minutes (odds, injury news, picks)
-    - cron: "4,19,34,49 0-2 * * *"    # ~8 PM to 10:50 PM ET, every 15 minutes (late games)
-    - cron: "13,43 3-5 * * *"         # ~11 PM to 1:45 AM ET, every 30 minutes (final scores)
+    # Times are UTC. Kept as a backup in case the outside scheduler stops.
+    - cron: "17 9 * * *"           # ~4-5 AM ET: final box scores from last night
   workflow_dispatch:
     inputs:
       job:
