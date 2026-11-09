@@ -130,6 +130,11 @@ def main(argv=None) -> int:
             result["notify"] = notify_new_bets(conn)
         except Exception as exc:          # a notification problem must never stop the site updating
             result["notify"] = {"status": "error", "error": str(exc)}
+        from .notify import heartbeat
+        try:
+            result["heartbeat"] = heartbeat(conn, result["notify"])
+        except Exception as exc:
+            result["heartbeat"] = {"status": "error", "error": str(exc)}
     conn.close()
     print(json.dumps(result, indent=2, default=str))
 
