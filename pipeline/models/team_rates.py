@@ -96,8 +96,13 @@ def _league(df: pd.DataFrame) -> dict:
     return out
 
 
-def estimates(cur: pd.DataFrame, prev: pd.DataFrame, fits: dict, teams) -> dict:
+def estimates(cur: pd.DataFrame, prev: pd.DataFrame, fits: dict, teams, relevel: bool = True) -> dict:
     """Shrunk rates for every team from this season so far (cur) and last season (prev).
+
+    Last season's numbers are moved onto this season's league level first (relevel): they
+    say how a team compared with the league then, not how much the league scored. Without
+    this, a drop in league scoring (2026-27 is about 3 points per 100 below 2025-26) leaves
+    both offenses and defenses inflated, and matchups add the two.
 
     Returns {"league": {...}, "teams": {team_id: {"off": {...}, "def": {...}}}}.
     """
@@ -106,6 +111,7 @@ def estimates(cur: pd.DataFrame, prev: pd.DataFrame, fits: dict, teams) -> dict:
         lc, lp = _league(cur), _league(prev)
         share = len(cur) / 60
         league = {k: share * lc[k] + (1 - share) * lp[k] if not np.isnan(lc[k]) else lp[k] for k in lp}
+    lg_prev = _league(prev) if len(prev) else {}
     out = {}
     for side in ("off", "def"):
         c, p = _side(cur, side), _side(prev, side)
@@ -121,6 +127,8 @@ def estimates(cur: pd.DataFrame, prev: pd.DataFrame, fits: dict, teams) -> dict:
                 cm = csum[made].get(t, 0.0)
                 ct = csum[tries].get(t, 0.0)
                 pm = psum[made].get(t, 0.0)
+                if relevel and lg_prev.get(name) and not np.isnan(lg_prev[name]):
+                    pm *= mu / lg_prev[name]
                 pt = psum[tries].get(t, 0.0)
                 den = ct + w * pt + k
                 val = (cm + w * pm + k * mu) / den if den > 0 else mu
