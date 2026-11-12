@@ -233,3 +233,28 @@ def test_daily_leaderboard_lines_and_role_changes(tmp_path):
     assert r["usg"] == pytest.approx(0.25)
     assert r["l10_min"] == pytest.approx(12.0) and r["l10_starts"] == 0 and r["prior_games"] == 11
     assert r["pra"] == 28 and r["on_net"] is None and r["proj_min"] is None
+
+
+def test_estimates_relevel_last_season():
+    """Last season's team numbers are moved onto this season's league level before shrinking."""
+    import pandas as pd
+    from pipeline.models import team_rates as TR
+
+    def games(rate, n):
+        rows = []
+        for i in range(n):
+            for t, o in ((1, 2), (2, 1)):
+                r = {c: 10.0 for c in TR.COUNTS}
+                r.update(game_id=f"g{i}", team_id=t, opp_id=o, and1=1.0, reb_chances=40.0, games48=1.0, poss=100.0)
+                for z in TR.ZONES:
+                    r[f"fga_{z}"], r[f"fgm_{z}"] = 20.0, 20.0 * rate
+                r["fga"], r["fgm"] = 20.0 * len(TR.ZONES), 20.0 * rate * len(TR.ZONES)
+                rows.append(r)
+        return pd.DataFrame(rows)
+    cur, prev = games(0.40, 40), games(0.50, 82)       # the league shot worse this season
+    fits = {f"{side}:{name}": {"k": 0.0, "w": 1.0} for side in ("off", "def") for name in TR.RATES}
+    z = TR.ZONES[0]
+    old = TR.estimates(cur, prev, fits, [1, 2], relevel=False)["teams"][1]["off"][f"fg_{z}"]
+    new = TR.estimates(cur, prev, fits, [1, 2])["teams"][1]["off"][f"fg_{z}"]
+    assert old > 0.43                      # pulled up toward last season's level
+    assert abs(new - 0.40) < 1e-9          # an average team stays at this season's league level
