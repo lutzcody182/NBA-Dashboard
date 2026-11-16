@@ -30,6 +30,21 @@ Stakes
   below 0.25 units, and no qualifying bet is dropped). One prop per player,
   and one side bet (moneyline or spread) per game. No daily limit: every bet
   that qualifies is recommended.
+Tracking mode (since Nov 16, 2026)
+  Through ~450 graded bets the picks lost about 11% and did not beat the
+  closing line, so every pick is now tracked first. A pick is only
+  recommended (shown as a bet, sent to the phone, counted in the record) when
+  its market has earned it (gate_table): at least GATE_MIN_GRADED graded picks
+  and GATE_MIN_CLV with a closing price after the pick, the closing line moving
+  toward the picks on average by at least GATE_CLV_Z standard errors, and the
+  picks winning at least as often as the market's own chances said. Markets are
+  split by side (prop unders and overs earn separately). Tracked picks get the
+  same stake a recommendation would, so their results read in units, but no
+  game cap. Picks made on a news pull (odds_api: an injury or lineup change near
+  tip-off) are also scored together, as "news", and earn on their own.
+  Extra markets tracked from the start: steals, blocks, steals+blocks,
+  turnovers, made FT and FG, double-doubles, alternate player lines (alt_*),
+  team totals, first-half lines and alternate spreads/totals.
 Ledger
   A pick is locked the first time it qualifies on prices at most
   FRESH_MINUTES old (any site update, not only right after a pull), at that
@@ -74,6 +89,10 @@ MAX_GAME_UNITS = 3.0
 MAX_DAY_PICKS = None      # no daily limit on bets (was 15)
 MAX_DAY_UNITS = None      # no daily limit on units (was 12)
 FRESH_MINUTES = 100       # picks are locked only from prices at most this old
+GATE_MIN_GRADED = 150     # a market earns recommendations only with this many graded picks
+GATE_MIN_CLV = 100        # ... this many with a closing price taken after the pick
+GATE_CLV_Z = 2.0          # ... closing line value above zero by this many standard errors
+MIN_BOOKS_ALT = 2         # alternate lines are quoted by fewer books
 MIN_PRICE, MAX_PRICE = -250, 250
 
 TABLE = """
@@ -103,9 +122,22 @@ CREATE TABLE IF NOT EXISTS bets (
 );
 CREATE INDEX IF NOT EXISTS idx_bets_game ON bets(game_id);
 """
-KIND_LABEL = {"prop": "Player prop", "moneyline": "Moneyline", "spread": "Spread", "total": "Total"}
+KIND_LABEL = {"prop": "Player prop", "moneyline": "Moneyline", "spread": "Spread", "total": "Total",
+              "team_total": "Team total", "moneyline_h1": "1st-half moneyline", "spread_h1": "1st-half spread",
+              "total_h1": "1st-half total", "alt_spread": "Alt spread", "alt_total": "Alt total"}
+# Odds API market key -> our kind, for the game markets
+GAME_KIND = {"h2h": "moneyline", "spreads": "spread", "totals": "total", "h2h_h1": "moneyline_h1",
+             "spreads_h1": "spread_h1", "totals_h1": "total_h1", "team_totals": "team_total",
+             "alternate_spreads": "alt_spread", "alternate_totals": "alt_total"}
+KIND_MARKET = {v: k for k, v in GAME_KIND.items()}
+TOTALS_LIKE = {"totals", "totals_h1", "alternate_totals", "team_totals"}
+SPREADS_LIKE = {"spreads", "spreads_h1", "alternate_spreads"}
+ALT_GAME = {"alternate_spreads": "spreads", "alternate_totals": "totals"}
 # results are also broken out by bet type: each prop stat, then the game markets
-MARKET_ORDER = ("pts", "reb", "ast", "fg3m", "pra", "pr", "pa", "ra", "moneyline", "spread", "total")
+MARKET_ORDER = ("pts", "reb", "ast", "fg3m", "pra", "pr", "pa", "ra", "stl", "blk", "stocks", "tov", "ftm", "fgm",
+                "dd", "alt_pts", "alt_reb", "alt_ast", "alt_fg3m", "alt_pra", "alt_pr", "alt_pa", "alt_ra",
+                "alt_stl", "alt_blk", "alt_tov", "moneyline", "spread", "total", "team_total", "moneyline_h1",
+                "spread_h1", "total_h1", "alt_spread", "alt_total")
 
 # What you actually got, when it differs from the recommendation (set through an override,
 # pipeline/overrides.py). Results and units are graded at these; the recommended price, line and
@@ -116,12 +148,15 @@ TAKEN_COLUMNS = (("taken_price", "INTEGER"), ("taken_line", "REAL"), ("taken_boo
 # 'expired' once they stop (with the reason and when), 'started' at tip-off. Nothing is deleted.
 STATE_COLUMNS = (("rec_state", "TEXT"), ("state_at", "TEXT"), ("ended_at", "TEXT"), ("end_reason", "TEXT"),
                  ("now_price", "INTEGER"), ("now_line", "REAL"), ("now_units", "REAL"), ("now_book", "TEXT"))
+# Tracking mode: 'rec' (a recommendation) or 'track' (tracked only); rows from before Nov 16, 2026 have none and
+# were recommendations. gate: the market it is scored in. trigger: 'news' when picked on a news pull.
+MODE_COLUMNS = (("mode", "TEXT"), ("gate", "TEXT"), ("trigger", "TEXT"))
 
 
 def ensure_table(conn) -> None:
     conn.executescript(TABLE)
     have = {r[1] for r in conn.execute("PRAGMA table_info(bets)")}
-    for col, decl in TAKEN_COLUMNS + STATE_COLUMNS:
+    for col, decl in TAKEN_COLUMNS + STATE_COLUMNS + MODE_COLUMNS:
         if col not in have:
             conn.execute(f"ALTER TABLE bets ADD COLUMN {col} {decl}")
     conn.commit()
@@ -131,69 +166,210 @@ def market_of(kind: str, stat) -> str:
     return stat if kind == "prop" else kind
 
 
-# ---------------------------------------------------------------- game lines
+def gate_key(kind: str, stat, side: str) -> str:
+    """The market a pick is scored and earns recommendations in: props and totals split by side."""
+    if kind == "prop":
+        return f"{stat}:{side}"
+    if kind in ("total", "total_h1", "alt_total", "team_total"):
+        return f"{kind}:{str(side).split('_')[-1]}"
+    return kind
 
-def game_market_table(odds: pd.DataFrame) -> list:
-    """Per game and market: the most-offered line, the median fair chance and the best price on each side."""
-    if odds.empty:
-        return []
-    out = []
-    for (gid, market), g in odds.groupby(["game_id", "market"]):
-        if market not in OA.GAME_MARKETS:
-            continue
-        a_side, b_side = ("over", "under") if market == "totals" else ("home", "away")
-        if market == "h2h":
-            g = g.assign(key_line=0.0)
-        elif market == "spreads":
-            # a spread pair shares one number: home -3.5 with away +3.5; key it by the home number
-            g = g.assign(key_line=np.where(g["side"] == "home", g["line"], -g["line"]))
-        else:
-            g = g.assign(key_line=g["line"])
-        pairs = g.pivot_table(index=["book", "key_line"], columns="side", values="price_american", aggfunc="first")
-        if a_side not in pairs or b_side not in pairs:
-            continue
-        pairs = pairs.dropna(subset=[a_side, b_side]).reset_index()
-        if pairs.empty:
-            continue
-        counts = Counter(pairs["key_line"])
-        top = max(counts.values())
-        mid = float(np.median(pairs["key_line"]))
-        line = min((l for l, c in counts.items() if c == top), key=lambda l: (abs(l - mid), l))
-        at = pairs[pairs["key_line"] == line]
-        books = []
-        for r in at.itertuples():
-            fair, hold = PM.devig(getattr(r, a_side), getattr(r, b_side))
-            if fair is not None:
-                books.append({"book": r.book, a_side: int(getattr(r, a_side)), b_side: int(getattr(r, b_side)),
-                              "fair": round(fair, 4), "hold": round(hold, 4)})
-        if not books:
-            continue
-        mine = [b for b in books if b["book"] in OA.BET_BOOKS]     # best prices only from the books you bet at
-        best = {s: (max(mine, key=lambda b: PM.decimal(b[s])) if mine else {s: None, "book": None}) for s in (a_side, b_side)}
-        out.append({"game_id": gid, "market": market, "line": float(line), "sides": (a_side, b_side),
-                    "fair": round(float(np.median([b["fair"] for b in books])), 4), "books": books,
-                    "best": {s: {"price": best[s][s], "book": best[s]["book"]} for s in (a_side, b_side)}})
+
+def gate_label(key: str) -> str:
+    from .props import STAT_LABEL
+    m, _, side = key.partition(":")
+    name = STAT_LABEL.get(m) or KIND_LABEL.get(m) or ("News-driven picks" if m == "news" else m)
+    if m == "dd" and side:
+        side = "yes" if side == "over" else "no"
+    return f"{name} {side}".strip()
+
+
+def gates(ledger: pd.DataFrame) -> dict:
+    """Per market (gate_key), how its graded picks have done, and whether it has earned recommendations."""
+    if ledger is None or ledger.empty:
+        return {}
+    df = ledger.copy()
+    if "gate" not in df or df["gate"].isna().any():
+        keys = [gate_key(k, s, sd) for k, s, sd in zip(df["kind"], df["stat"], df["side"])]
+        df["gate"] = df["gate"].where(df["gate"].notna(), pd.Series(keys, index=df.index)) if "gate" in df \
+            else keys
+    groups = {k: g for k, g in df.groupby("gate")}
+    if "trigger" in df and (df["trigger"] == "news").any():
+        groups["news"] = df[df["trigger"] == "news"]
+    out = {}
+    for key, g in groups.items():
+        done = g[g["status"].isin(["won", "lost", "push"])]
+        dec = done[done["status"] != "push"]
+        clv = done["clv"].dropna()
+        n_clv = int(len(clv))
+        clv_mean = float(clv.mean()) if n_clv else None
+        clv_se = float(clv.std(ddof=1) / math.sqrt(n_clv)) if n_clv > 1 else None
+        win = float((dec["status"] == "won").mean()) if len(dec) else None
+        exp = float(dec["p_market"].mean()) if len(dec) else None
+        risked = float(done["units"].sum())
+        pnl = float(done["pnl"].sum()) if len(done) else 0.0
+        z = clv_mean / clv_se if clv_mean is not None and clv_se else None
+        short = []
+        if len(done) < GATE_MIN_GRADED:
+            short.append(f"{GATE_MIN_GRADED - len(done)} more graded picks")
+        if n_clv < GATE_MIN_CLV:
+            short.append(f"{GATE_MIN_CLV - n_clv} more with a closing price")
+        if z is None or z < GATE_CLV_Z:
+            short.append("the closing line moving our way" if clv_mean is None or clv_mean <= 0
+                         else "a clearer edge on the closing line")
+        if win is None or exp is None or win < exp:
+            short.append("winning as often as the market expected")
+        out[key] = {"key": key, "label": gate_label(key), "picks": int(len(g)), "graded": int(len(done)),
+                    "won": int((done["status"] == "won").sum()), "lost": int((done["status"] == "lost").sum()),
+                    "win_rate": round(win, 4) if win is not None else None,
+                    "expected": round(exp, 4) if exp is not None else None,
+                    "avg_clv": round(clv_mean, 4) if clv_mean is not None else None,
+                    "clv_z": round(z, 2) if z is not None else None, "clv_n": n_clv,
+                    "beat_close": round(float((clv > BEAT_EPS).mean()), 3) if n_clv else None,
+                    "units_risked": round(risked, 2), "units": round(pnl, 2),
+                    "roi": round(pnl / risked, 4) if risked else None,
+                    "status": "earned" if not short else "tracking", "needs": short}
     return out
 
 
-def game_probs(sim: dict, market: str, line: float, report: dict):
-    """(P first side wins, P push) from the simulation: home for moneyline/spread, over for totals."""
-    if market == "h2h":
-        return float(sim["home_win"]), 0.0
-    if market == "spreads":
-        mu = float(sim["margin"]) - float(report.get("margin_bias") or 0.0)
-        sd = float(report.get("margin_rmse") or 14.0)
-        thr = -line                      # home covers when margin > -line
-    else:
-        mu = float(sim["total"]) - float(report.get("total_bias") or 0.0)
-        sd = float(report.get("total_rmse") or 19.0)
-        thr = line
+def _earned(c: dict, gate_info: dict) -> bool:
+    if (gate_info.get(c["gate"]) or {}).get("status") == "earned":
+        return True
+    return c.get("trigger") == "news" and (gate_info.get("news") or {}).get("status") == "earned"
+
+
+# ---------------------------------------------------------------- game lines
+
+def _entry(gid, market, g, a_side, b_side, line, team=None):
+    """One game market at one line: the median fair chance over books with both sides, and the best prices."""
+    pairs = g.pivot_table(index=["book", "key_line"], columns="side", values="price_american", aggfunc="first")
+    if a_side not in pairs or b_side not in pairs:
+        return None
+    pairs = pairs.dropna(subset=[a_side, b_side]).reset_index()
+    at = pairs[pairs["key_line"] == line]
+    books = []
+    for r in at.itertuples():
+        fair, hold = PM.devig(getattr(r, a_side), getattr(r, b_side))
+        if fair is not None:
+            books.append({"book": r.book, a_side: int(getattr(r, a_side)), b_side: int(getattr(r, b_side)),
+                          "fair": round(fair, 4), "hold": round(hold, 4)})
+    if not books:
+        return None
+    mine = [b for b in books if b["book"] in OA.BET_BOOKS]     # best prices only from the books you bet at
+    best = {s: (max(mine, key=lambda b: PM.decimal(b[s])) if mine else {s: None, "book": None}) for s in (a_side, b_side)}
+    e = {"game_id": gid, "market": market, "line": float(line), "sides": (a_side, b_side),
+         "fair": round(float(np.median([b["fair"] for b in books])), 4), "books": books,
+         "best": {s: {"price": best[s][s], "book": best[s]["book"]} for s in (a_side, b_side)},
+         "fetched_at": str(g["fetched_at"].max()) if "fetched_at" in g else None}
+    if team:
+        e["team"] = team
+    return e
+
+
+def _keyed(g: pd.DataFrame, market: str) -> pd.DataFrame:
+    if market.startswith("h2h"):
+        return g.assign(key_line=0.0)
+    if market in SPREADS_LIKE:
+        # a spread pair shares one number: home -3.5 with away +3.5; key it by the home number
+        return g.assign(key_line=np.where(g["side"] == "home", g["line"], -g["line"]))
+    return g.assign(key_line=g["line"])
+
+
+def _main_line(g: pd.DataFrame, a_side: str, b_side: str):
+    pairs = g.pivot_table(index=["book", "key_line"], columns="side", values="price_american", aggfunc="first")
+    if a_side not in pairs or b_side not in pairs:
+        return None
+    pairs = pairs.dropna(subset=[a_side, b_side]).reset_index()
+    if pairs.empty:
+        return None
+    counts = Counter(pairs["key_line"])
+    top = max(counts.values())
+    mid = float(np.median(pairs["key_line"]))
+    return min((l for l, c in counts.items() if c == top), key=lambda l: (abs(l - mid), l))
+
+
+def game_market_table(odds: pd.DataFrame) -> list:
+    """Per game and market: the most-offered line (every line for alternates), the median fair chance and
+    the best price on each side. Team totals get one entry per team."""
+    if odds.empty:
+        return []
+    out = []
+    mains = {}
+    for (gid, market), g in sorted(odds.groupby(["game_id", "market"]), key=lambda x: x[0][1] in ALT_GAME):
+        if market not in OA.ALL_GAME_MARKETS:
+            continue
+        if market == "team_totals":
+            for team in ("home", "away"):
+                sub = g[g["side"].str.startswith(team + "_")]
+                sub = sub.assign(side=sub["side"].str.split("_").str[-1], key_line=sub["line"])
+                line = _main_line(sub, "over", "under")
+                e = _entry(gid, market, sub, "over", "under", line, team) if line is not None else None
+                if e:
+                    out.append(e)
+            continue
+        a_side, b_side = ("over", "under") if market in TOTALS_LIKE else ("home", "away")
+        g = _keyed(g, market)
+        if market in ALT_GAME:
+            main = mains.get((gid, ALT_GAME[market]))
+            for line in sorted(set(g["key_line"])):
+                if main is not None and abs(line - main) < 1e-9:
+                    continue
+                e = _entry(gid, market, g, a_side, b_side, line)
+                if e:
+                    out.append(e)
+            continue
+        line = _main_line(g, a_side, b_side)
+        if line is None:
+            continue
+        mains[(gid, market)] = line
+        e = _entry(gid, market, g, a_side, b_side, line)
+        if e:
+            out.append(e)
+    return out
+
+
+def _normal(mu: float, sd: float, thr: float):
+    """(P above thr, P exactly thr) for a whole-point score around a normal curve."""
     if float(thr).is_integer():
         win = 1 - st.norm.cdf(thr + 0.5, mu, sd)
         push = st.norm.cdf(thr + 0.5, mu, sd) - st.norm.cdf(thr - 0.5, mu, sd)
     else:
         win, push = 1 - st.norm.cdf(thr, mu, sd), 0.0
     return float(win), float(push)
+
+
+def game_probs(sim: dict, market: str, line: float, report: dict, team: str = None):
+    """(P first side wins, P push) from the simulation: home for moneyline/spread, over for totals.
+
+    Spreads and totals use a normal curve with the size of miss measured when the model was replayed on a
+    past season (RMSE). First halves and team totals scale that miss by the simulation's own spread of each
+    number against the full-game one. The replay's average bias is no longer applied (until Nov 16, 2026 it
+    was, with the wrong sign: subtracted where it should have been added): it was measured before the
+    Nov 11 scoring-level fix (team_rates relevel), which removed most of it."""
+    m_rmse = float(report.get("margin_rmse") or 14.0)
+    t_rmse = float(report.get("total_rmse") or 19.0)
+    m_bias = t_bias = 0.0
+    h1 = sim.get("h1") or {}
+    if market == "h2h":
+        return float(sim["home_win"]), 0.0
+    if market == "h2h_h1":
+        if not h1:
+            raise KeyError("no first-half simulation")
+        return float(h1["home_win"]), float(h1["tie"])
+    if market in ("spreads", "alternate_spreads"):
+        return _normal(float(sim["margin"]) + m_bias, m_rmse, -line)      # home covers when margin > -line
+    if market in ("totals", "alternate_totals"):
+        return _normal(float(sim["total"]) + t_bias, t_rmse, line)
+    if market == "spreads_h1":
+        sd = m_rmse * float(h1["margin_sd"]) / float(sim["margin_sd"])
+        return _normal(float(h1["margin_mean"]) + m_bias / 2, sd, -line)
+    if market == "totals_h1":
+        sd = t_rmse * float(h1["total_sd"]) / float(sim["total_sd"])
+        return _normal(float(h1["total_mean"]) + t_bias / 2, sd, line)
+    if market == "team_totals":
+        sd = t_rmse * float(sim[f"{team}_pts_sd"]) / float(sim["total_sd"])
+        return _normal(float(sim[f"{team}_pts"]) + t_bias / 2, sd, line)
+    raise KeyError(market)
 
 
 # ---------------------------------------------------------------- candidates
@@ -208,9 +384,9 @@ def kelly_units(p: float, price: int, cap: float = None) -> float:
     return u if u >= 0.25 else 0.0
 
 
-def _candidate(kind, game_id, side, line, price, book, p_model, p_market, push, books, **extra):
+def _candidate(kind, game_id, side, line, price, book, p_model, p_market, push, books, min_books=MIN_BOOKS, **extra):
     """p_model / p_market: chance this side wins, pushes excluded."""
-    if price is None or not (MIN_PRICE <= price <= MAX_PRICE) or books < MIN_BOOKS:
+    if price is None or not (MIN_PRICE <= price <= MAX_PRICE) or books < min_books:
         return None
     gap = p_model - p_market
     if gap < MIN_GAP or gap > MAX_GAP:
@@ -223,12 +399,16 @@ def _candidate(kind, game_id, side, line, price, book, p_model, p_market, push, 
     units = min(full, MAX_UNITS)
     if units <= 0:
         return None
-    return {"kind": kind, "game_id": game_id, "side": side, "line": line, "price": int(price), "book": book,
-            "p_model": round(p_model, 4), "p_market": round(p_market, 4), "p_used": round(p, 4),
-            "ev": round(ev, 4), "units": units, "units_full": full, "books": books, **extra}
+    c = {"kind": kind, "game_id": game_id, "side": side, "line": line, "price": int(price), "book": book,
+         "p_model": round(p_model, 4), "p_market": round(p_market, 4), "p_used": round(p, 4),
+         "ev": round(ev, 4), "units": units, "units_full": full, "books": books, **extra}
+    c["gate"] = gate_key(kind, c.get("stat"), side)
+    return c
 
 
 def prop_candidates(rows: list) -> list:
+    """Every prop side that passes the filters, overs included: in tracking mode overs are tracked, and they
+    can only be recommended once their market earns it (PROP_OVERS stays False: no override)."""
     out = []
     for r in rows:
         m = r.get("model")
@@ -239,12 +419,11 @@ def prop_candidates(rows: list) -> list:
             continue
         n = len(r["books"])
         for side, p_mod, p_mkt in (("over", po, r["fair_over"]), ("under", 1 - po, 1 - r["fair_over"])):
-            if side == "over" and not PROP_OVERS:
-                continue
-            best = r["best_over"] if side == "over" else r["best_under"]
-            c = _candidate("prop", r["game_id"], side, r["line"], best["price"], best["book"], p_mod, p_mkt,
-                           m.get("p_push", 0.0), n, player_id=r["player_id"], stat=r["stat"],
-                           model_mean=m["mean"], model_min=m["min"])
+            best = (r["best_over"] if side == "over" else r["best_under"]) or {}
+            c = _candidate("prop", r["game_id"], side, r["line"], best.get("price"), best.get("book"), p_mod, p_mkt,
+                           m.get("p_push", 0.0), n, MIN_BOOKS_ALT if r.get("alt") else MIN_BOOKS,
+                           player_id=r["player_id"], stat=r["stat"],
+                           model_mean=m["mean"], model_min=m["min"], fetched_at=r.get("fetched_at"))
             if c:
                 out.append(c)
     return out
@@ -258,39 +437,63 @@ def game_candidates(table: list, sims: dict) -> list:
         sim = by_game.get(t["game_id"])
         if not sim:
             continue
-        p_first, push = game_probs(sim, t["market"], t["line"], report)
+        try:
+            p_first, push = game_probs(sim, t["market"], t["line"], report, t.get("team"))
+        except (KeyError, TypeError, ZeroDivisionError):        # e.g. a simulation from before first halves
+            continue
         p_first_np = p_first / (1 - push) if push < 1 else 0.5
         a, b = t["sides"]
-        kind = {"h2h": "moneyline", "spreads": "spread", "totals": "total"}[t["market"]]
+        kind = GAME_KIND[t["market"]]
         for side, p_mod, p_mkt in ((a, p_first_np, t["fair"]), (b, 1 - p_first_np, 1 - t["fair"])):
-            line = None if kind == "moneyline" else (t["line"] if side in ("home", "over", "under") else -t["line"])
-            c = _candidate(kind, t["game_id"], side, line, t["best"][side]["price"], t["best"][side]["book"],
+            line = None if kind.startswith("moneyline") else \
+                (t["line"] if side in ("home", "over", "under") else -t["line"])
+            c = _candidate(kind, t["game_id"], f"{t['team']}_{side}" if t.get("team") else side, line,
+                           t["best"][side]["price"], t["best"][side]["book"],
                            p_mod, p_mkt, push, len(t["books"]),
-                           sim_margin=sim["margin"], sim_total=sim["total"])
+                           MIN_BOOKS_ALT if t["market"] in ALT_GAME else MIN_BOOKS,
+                           sim_margin=sim["margin"], sim_total=sim["total"], fetched_at=t.get("fetched_at"))
             if c:
                 out.append(c)
     return out
 
 
-def select(cands: list) -> list:
-    """One prop per player, one side bet per game, then the per-game stake cap."""
+def pick_key(c: dict) -> tuple:
+    """One pick per player and market, and per game and market family."""
+    if c["kind"] == "prop":
+        return ("prop", c["game_id"], c["player_id"], c["stat"])
+    if c["kind"] in ("moneyline", "spread"):
+        return ("side", c["game_id"])
+    if c["kind"] in ("moneyline_h1", "spread_h1"):
+        return ("side_h1", c["game_id"])
+    if c["kind"] == "team_total":
+        return ("team_total", c["game_id"], c["side"].split("_")[0])
+    return (c["kind"], c["game_id"])
+
+
+def select(cands: list, gate_info: dict = None) -> list:
+    """The picks: one per player and market, one per game and market family. Each is marked 'rec' when its
+    market has earned recommendations, else 'track'. Recommendations then keep one prop per player and fit
+    the per-game stake cap; tracked picks keep their stakes (no game cap: they are not bets)."""
     cands = sorted(cands, key=lambda c: -c["ev"])
     picked, seen = [], set()
     for c in cands:
-        if c["kind"] == "prop":
-            key = ("prop", c["game_id"], c["player_id"])
-        elif c["kind"] in ("moneyline", "spread"):
-            key = ("side", c["game_id"])
-        else:
-            key = ("total", c["game_id"])
+        key = pick_key(c)
         if key in seen:
             continue
         seen.add(key)
+        c["mode"] = "rec" if _earned(c, gate_info or {}) else "track"
         picked.append(c)
+    seen_player = set()
+    for c in picked:                     # recommendations: one prop per player
+        if c["mode"] == "rec" and c["kind"] == "prop":
+            k = (c["game_id"], c["player_id"])
+            if k in seen_player:
+                c["mode"] = "track"
+            seen_player.add(k)
     by_game = defaultdict(list)
     for c in picked:
-        by_game[c["game_id"]].append(c)
-    out = []
+        if c["mode"] == "rec":
+            by_game[c["game_id"]].append(c)
     for gid, cs in by_game.items():
         tot = sum(c["units"] for c in cs)
         if tot > MAX_GAME_UNITS:
@@ -298,15 +501,14 @@ def select(cands: list) -> list:
             for c in cs:
                 c["units"] = max(0.25, math.floor(c["units"] * f * 4) / 4)
             # every qualifying bet stays; if the 0.25 minimum keeps the game a little over, so be it
-        out += cs
-    out.sort(key=lambda c: -c["ev"])
+    picked.sort(key=lambda c: (c["mode"] != "rec", -c["ev"]))
     keep, units = [], 0.0
-    for c in out:
-        if (MAX_DAY_PICKS is not None and len(keep) >= MAX_DAY_PICKS) or \
-                (MAX_DAY_UNITS is not None and units + c["units"] > MAX_DAY_UNITS):
+    for c in picked:
+        if c["mode"] == "rec" and ((MAX_DAY_PICKS is not None and len(keep) >= MAX_DAY_PICKS) or
+                                   (MAX_DAY_UNITS is not None and units + c["units"] > MAX_DAY_UNITS)):
             continue
         keep.append(c)
-        units += c["units"]
+        units += c["units"] if c["mode"] == "rec" else 0.0
     return keep
 
 
@@ -316,7 +518,7 @@ def lock(conn, picks: list, games: dict, now_iso: str) -> int:
     """Store picks not already on the ledger for that game, market and player. Returns how many were added."""
     settings = json.dumps({"blend": BLEND, "min_ev": MIN_EV, "max_gap": MAX_GAP, "kelly": KELLY,
                            "max_units": MAX_UNITS, "max_game_units": MAX_GAME_UNITS,
-                           "prop_overs": PROP_OVERS})
+                           "prop_overs": PROP_OVERS, "tracking": True})
     added = 0
     for c in picks:
         g = games.get(c["game_id"])
@@ -334,15 +536,23 @@ def lock(conn, picks: list, games: dict, now_iso: str) -> int:
         elif c["kind"] in ("moneyline", "spread"):
             exists = conn.execute("SELECT 1 FROM bets WHERE game_id=? AND kind IN ('moneyline','spread')",
                                   (c["game_id"],)).fetchone()
+        elif c["kind"] in ("moneyline_h1", "spread_h1"):
+            exists = conn.execute("SELECT 1 FROM bets WHERE game_id=? AND kind IN ('moneyline_h1','spread_h1')",
+                                  (c["game_id"],)).fetchone()
+        elif c["kind"] == "team_total":
+            exists = conn.execute("SELECT 1 FROM bets WHERE game_id=? AND kind='team_total' AND side LIKE ?",
+                                  (c["game_id"], c["side"].split("_")[0] + "_%")).fetchone()
         else:
-            exists = conn.execute("SELECT 1 FROM bets WHERE game_id=? AND kind='total'", (c["game_id"],)).fetchone()
+            exists = conn.execute("SELECT 1 FROM bets WHERE game_id=? AND kind=?", (c["game_id"], c["kind"])).fetchone()
         if exists:
             continue
         conn.execute(
             """INSERT INTO bets (created_at, game_id, kind, player_id, stat, side, line, price, book, p_model,
-                 p_market, p_used, ev, units, units_full, settings) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 p_market, p_used, ev, units, units_full, settings, mode, gate, trigger)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (now_iso, c["game_id"], c["kind"], c.get("player_id"), c.get("stat"), c["side"], c["line"], c["price"],
-             c["book"], c["p_model"], c["p_market"], c["p_used"], c["ev"], c["units"], c.get("units_full"), settings))
+             c["book"], c["p_model"], c["p_market"], c["p_used"], c["ev"], c["units"], c.get("units_full"), settings,
+             c.get("mode", "rec"), c.get("gate"), c.get("trigger")))
         added += 1
     conn.commit()
     return added
@@ -363,8 +573,9 @@ def _why(b: dict, cands: list, prop_rows: list, table: list) -> str:
     if any(_same(c, b) for c in cands):
         return "another bet on the same player or game now looks better"
     if b["kind"] == "prop":
+        alt = str(b["stat"]).startswith("alt_")
         r = next((r for r in prop_rows if r["game_id"] == b["game_id"] and r["player_id"] == b["player_id"]
-                  and r["stat"] == b["stat"]), None)
+                  and r["stat"] == b["stat"] and (not alt or r["line"] == b["line"])), None)
         if r is None:
             return "no longer offered by enough legal books"
         m = r.get("model") or {}
@@ -377,15 +588,19 @@ def _why(b: dict, cands: list, prop_rows: list, table: list) -> str:
         po = m["p_over"] / (m["p_over"] + m["p_under"]) if m and m.get("p_over") is not None and m["p_over"] + m["p_under"] > 0 else None
         mod = po if b["side"] == "over" else (1 - po if po is not None else None)
     else:
-        mk = {"moneyline": "h2h", "spread": "spreads", "total": "totals"}[b["kind"]]
-        t = next((t for t in table if t["game_id"] == b["game_id"] and t["market"] == mk), None)
+        mk = KIND_MARKET[b["kind"]]
+        team, side = (b["side"].split("_") if b["kind"] == "team_total" else (None, b["side"]))
+        alt = mk in ALT_GAME
+        t = next((t for t in table if t["game_id"] == b["game_id"] and t["market"] == mk
+                  and t.get("team") == team and (not alt or b["line"] is None or abs(
+                      (t["line"] if side in ("home", "over", "under") else -t["line"]) - b["line"]) < 1e-9)), None)
         if t is None:
             return "no longer offered by enough legal books"
-        line = None if b["kind"] == "moneyline" else (t["line"] if b["side"] in ("home", "over", "under") else -t["line"])
+        line = None if mk.startswith("h2h") else (t["line"] if side in ("home", "over", "under") else -t["line"])
         if line is not None and b["line"] is not None and abs(line - b["line"]) > 1e-9:
-            return f"line moved to {line:+g}" if b["kind"] == "spread" else f"line moved to {line:g}"
-        price = (t["best"].get(b["side"]) or {}).get("price")
-        fair = t["fair"] if b["side"] in t["sides"][:1] else 1 - t["fair"]
+            return f"line moved to {line:+g}" if mk in SPREADS_LIKE else f"line moved to {line:g}"
+        price = (t["best"].get(side) or {}).get("price")
+        fair = t["fair"] if side in t["sides"][:1] else 1 - t["fair"]
         mod = None
     if price is not None and PM.decimal(price) < PM.decimal(b["price"]) - 1e-9:
         return f"price moved to {_odds(price)}"
@@ -431,38 +646,75 @@ def track(conn, picks: list, cands: list, prop_rows: list, table: list, games: d
 
 
 def _closing_fair(conn, bet: dict, tip: str):
-    """Market fair chance for the bet's side at the last legal-book pull before tip-off, at the same line."""
-    q = """SELECT book, side, line, price_american FROM odds_snapshots
+    """Market fair chance for the bet's side at the last legal-book pull before tip-off, at the same line.
+
+    None when that last pull is the one the pick was made from (or earlier): there is no later price to
+    compare with, so the pick says nothing about the closing line (until Nov 16, 2026 these counted as 0)."""
+    q = """SELECT book, side, line, price_american, fetched_at FROM odds_snapshots
            WHERE game_id=? AND source=? AND fetched_at=(SELECT MAX(fetched_at) FROM odds_snapshots
                  WHERE game_id=? AND source=? AND fetched_at < ? AND {w}) AND {w}"""
-    if bet["kind"] == "prop":
-        mk = {v: k for k, v in OA.MARKETS.items()}[bet["stat"]]
+    kind, side = bet["kind"], bet["side"]
+    team = None
+    if kind == "prop":
+        mk = OA.STAT_MARKET.get(bet["stat"])
+        if mk is None:
+            return None
         w = f"player_id={int(bet['player_id'])} AND market='{mk}'"
     else:
-        mk = {"moneyline": "h2h", "spread": "spreads", "total": "totals"}[bet["kind"]]
+        mk = KIND_MARKET[kind]
         w = f"player_id IS NULL AND market='{mk}'"
+        if kind == "team_total":
+            team, side = side.split("_")
     rows = conn.execute(q.format(w=w), (bet["game_id"], OA.SOURCE, bet["game_id"], OA.SOURCE, tip)).fetchall()
+    if not rows or (bet.get("created_at") and rows[0][4] <= bet["created_at"]):
+        return None
     by_book = defaultdict(dict)
-    for book, side, line, price in rows:
+    for book, s_, line, price, _ in rows:
         if book not in OA.LEGAL_BOOKS:
             continue
-        if bet["kind"] == "spread":
-            key = line if side == "home" else -line          # home number
-            want = bet["line"] if bet["side"] == "home" else -bet["line"]
-        elif bet["kind"] == "moneyline":
+        if team is not None:
+            if not s_.startswith(team + "_"):
+                continue
+            s_ = s_.split("_")[-1]
+        if kind != "prop" and mk in SPREADS_LIKE:
+            key = line if s_ == "home" else -line          # home number
+            want = bet["line"] if side == "home" else -bet["line"]
+        elif kind != "prop" and mk.startswith("h2h"):
             key, want = 0.0, 0.0
         else:
             key, want = line, bet["line"]
         if abs(key - want) < 1e-9:
-            by_book[book][side] = price
-    other = {"over": "under", "under": "over", "home": "away", "away": "home"}[bet["side"]]
+            by_book[book][s_] = price
+    other = {"over": "under", "under": "over", "home": "away", "away": "home"}[side]
     fairs = []
     for b, sides in by_book.items():
-        if bet["side"] in sides and other in sides:
-            f, _ = PM.devig(sides[bet["side"]], sides[other])
+        if kind == "prop" and str(bet["stat"]).startswith("alt_"):
+            from .props import alt_fair
+            fo = alt_fair(sides)
+            if fo is not None:
+                fairs.append(fo if side == "over" else 1 - fo)
+        elif side in sides and other in sides:
+            f, _ = PM.devig(sides[side], sides[other])
             if f is not None:
                 fairs.append(f)
     return float(np.median(fairs)) if fairs else None
+
+
+def first_half(conn, game_ids) -> dict:
+    """game_id -> (home, away) first-half points from the play-by-play, only where the play-by-play adds up
+    to the final score (otherwise a first-half bet waits, and is void after three days)."""
+    if not game_ids:
+        return {}
+    q = ",".join("?" * len(game_ids))
+    rows = conn.execute(
+        f"""SELECT g.game_id, g.home_score, g.away_score,
+                   SUM(CASE WHEN p.team_id = g.home_team_id THEN p.pts END),
+                   SUM(CASE WHEN p.team_id = g.away_team_id THEN p.pts END),
+                   SUM(CASE WHEN p.team_id = g.home_team_id AND p.period <= 2 THEN p.pts END),
+                   SUM(CASE WHEN p.team_id = g.away_team_id AND p.period <= 2 THEN p.pts END)
+            FROM games g JOIN pbp_poss p ON p.game_id = g.game_id
+            WHERE g.game_id IN ({q}) GROUP BY g.game_id""", list(game_ids)).fetchall()
+    return {r[0]: (r[5], r[6]) for r in rows if r[1] == r[3] and r[2] == r[4] and r[5] is not None}
 
 
 def grade(conn, season: str) -> int:
@@ -481,6 +733,11 @@ def grade(conn, season: str) -> int:
             if s not in logs or len(parts) > 1:
                 logs[s] = sum(logs[p] for p in parts)
         logs = logs.set_index(["game_id", "player_id"])
+    try:
+        halves = first_half(conn, [b["game_id"] for b in finals if b["kind"].endswith("_h1")])
+    except Exception:                           # no play-by-play table
+        halves = {}
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
     now = utc_now_iso()
     n = 0
     for b in voided:
@@ -495,22 +752,36 @@ def grade(conn, season: str) -> int:
                 conn.execute("UPDATE bets SET status='void', pnl=0, graded_at=? WHERE bet_id=?", (now, b["bet_id"]))
                 n += 1
                 continue
-            val = float(logs.loc[key, b["stat"]])
+            stat = b["stat"][4:] if str(b["stat"]).startswith("alt_") else b["stat"]
+            val = float(logs.loc[key, stat])
             diff = val - b["line"] if b["side"] == "over" else b["line"] - val
         else:
             if b["home_score"] is None or b["away_score"] is None:
                 continue
-            margin = b["home_score"] - b["away_score"]
-            total = b["home_score"] + b["away_score"]
-            if b["kind"] == "moneyline":
+            hs, as_ = b["home_score"], b["away_score"]
+            if b["kind"].endswith("_h1"):
+                if b["game_id"] not in halves:
+                    if (b["tip_utc"] or now) < old:
+                        conn.execute("UPDATE bets SET status='void', pnl=0, graded_at=? WHERE bet_id=?",
+                                     (now, b["bet_id"]))
+                        n += 1
+                    continue
+                hs, as_ = halves[b["game_id"]]
+            margin, total = hs - as_, hs + as_
+            side = b["side"]
+            if b["kind"] in ("moneyline", "moneyline_h1"):
                 val = margin
-                diff = margin if b["side"] == "home" else -margin
-            elif b["kind"] == "spread":
+                diff = margin if side == "home" else -margin
+            elif b["kind"] in ("spread", "spread_h1", "alt_spread"):
                 val = margin
-                diff = (margin + b["line"]) if b["side"] == "home" else (-margin + b["line"])
+                diff = (margin + b["line"]) if side == "home" else (-margin + b["line"])
+            elif b["kind"] == "team_total":
+                team, side = side.split("_")
+                val = hs if team == "home" else as_
+                diff = val - b["line"] if side == "over" else b["line"] - val
             else:
                 val = total
-                diff = total - b["line"] if b["side"] == "over" else b["line"] - total
+                diff = total - b["line"] if side == "over" else b["line"] - total
         status = "won" if diff > 0 else "lost" if diff < 0 else "push"
         price = b["taken_price"] if b.get("taken_price") is not None else b["price"]
         pnl = b["units"] * (PM.decimal(price) - 1) if status == "won" else -b["units"] if status == "lost" else 0.0
@@ -540,19 +811,36 @@ def summary(df: pd.DataFrame) -> dict:
             "beat_close": round(float((clv > BEAT_EPS).mean()), 3) if len(clv) else None, "clv_n": int(len(clv))}
 
 
+def _ledger(conn) -> pd.DataFrame:
+    ledger = pd.read_sql_query(
+        """SELECT b.*, g.game_date, g.home_team_id, g.away_team_id, g.tip_utc, g.home_score, g.away_score
+           FROM bets b JOIN games g ON g.game_id = b.game_id ORDER BY b.created_at DESC, b.bet_id DESC""", conn)
+    if len(ledger):
+        ledger["gate"] = [g if isinstance(g, str) and g else gate_key(k, st_, sd)
+                          for g, k, st_, sd in zip(ledger["gate"], ledger["kind"], ledger["stat"], ledger["side"])]
+        ledger["mode"] = ledger["mode"].fillna("rec")
+    return ledger
+
+
+TRACK_DAYS = 10          # tracked picks older than this stay in the scorecard but are left out of bets.json
+
+
 def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list, pulled: dict, write) -> dict:
     ensure_table(conn)
     from .props import _latest_odds
     gmap = {g["game_id"]: g for g in games}
     table = game_market_table(_latest_odds(conn, list(gmap), props=False))
     cands = prop_candidates(prop_rows or []) + game_candidates(table, sims)
-    picks = select(cands)
+    news = set((pulled or {}).get("news_games") or [])
+    for c in cands:                     # picked from a news pull's prices
+        if c["game_id"] in news and c.get("fetched_at") == (pulled or {}).get("fetched_at"):
+            c["trigger"] = "news"
+    gate_info = gates(_ledger(conn))
+    picks = select(cands, gate_info)
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    # lock on any run while the stored prices are fresh, not only right after a pull
-    fresh = {r[0]: r[1] for r in conn.execute(
-        "SELECT game_id, MAX(fetched_at) FROM odds_snapshots WHERE source = ? GROUP BY game_id", (OA.SOURCE,))}
+    # lock on any run while the pick's own prices are fresh, not only right after a pull
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=FRESH_MINUTES)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    lockable = [c for c in picks if (fresh.get(c["game_id"]) or "") >= cutoff]
+    lockable = [c for c in picks if (c.get("fetched_at") or "") >= cutoff]
     added = lock(conn, lockable, gmap, now_iso)
     try:
         states = track(conn, picks, cands, prop_rows or [], table, gmap, now_iso)
@@ -560,39 +848,58 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
         log.exception("Tracking recommendation states failed")
         states = {}
     for c in picks:
-        c["odds_at"] = fresh.get(c["game_id"])
+        c["odds_at"] = c.get("fetched_at")
     graded = grade(conn, season)
-    ledger = pd.read_sql_query(
-        """SELECT b.*, g.game_date, g.home_team_id, g.away_team_id, g.tip_utc, g.home_score, g.away_score
-           FROM bets b JOIN games g ON g.game_id = b.game_id ORDER BY b.created_at DESC, b.bet_id DESC""", conn)
+    ledger = _ledger(conn)
+    gate_info = gates(ledger)
     names = dict(conn.execute("SELECT player_id, full_name FROM players").fetchall())
-    ledger["player"] = ledger["player_id"].map(lambda p: names.get(int(p)) if pd.notna(p) else None)
-    by_kind = {k: summary(ledger[ledger["kind"] == k]) for k in KIND_LABEL if (ledger["kind"] == k).any()} \
-        if len(ledger) else {}
+    ledger["player"] = ledger["player_id"].map(lambda p: names.get(int(p)) if pd.notna(p) else None) \
+        if len(ledger) else None
+    real = ledger[ledger["mode"] == "rec"] if len(ledger) else ledger      # the bets: recommendations only
+    by_kind = {k: summary(real[real["kind"] == k]) for k in KIND_LABEL if (real["kind"] == k).any()} \
+        if len(real) else {}
     by_market = {}
-    if len(ledger):
-        mk = [market_of(k, s) for k, s in zip(ledger["kind"], ledger["stat"])]
-        ledger["market"] = mk
-        by_market = {m: summary(ledger[ledger["market"] == m]) for m in MARKET_ORDER if m in set(mk)}
+    if len(real):
+        mk = [market_of(k, s_) for k, s_ in zip(real["kind"], real["stat"])]
+        real = real.assign(market=mk)
+        by_market = {m: summary(real[real["market"] == m]) for m in MARKET_ORDER if m in set(mk)}
+    tracked = ledger[ledger["mode"] == "track"] if len(ledger) else ledger
     cols = ["bet_id", "created_at", "game_id", "game_date", "home_team_id", "away_team_id", "tip_utc", "kind",
             "player_id", "player", "stat", "side", "line", "price", "book", "p_model", "p_market", "p_used", "ev",
             "units", "status", "result", "pnl", "close_fair", "clv", "home_score", "away_score",
-            "taken_price", "taken_line", "taken_book", "taken_at", "units_full"] + [c for c, _ in STATE_COLUMNS]
-    led = ledger[cols].astype(object).where(pd.notna(ledger[cols]), None) if len(ledger) else ledger
-    game_lines = [{k: v for k, v in t.items() if k != "sides"} | {"sides": list(t["sides"])} for t in table]
+            "taken_price", "taken_line", "taken_book", "taken_at", "units_full"] + \
+        [c for c, _ in STATE_COLUMNS] + [c for c, _ in MODE_COLUMNS]
+    if len(ledger):
+        since = (datetime.now(timezone.utc) - timedelta(days=TRACK_DAYS)).strftime("%Y-%m-%d")
+        shown = ledger[(ledger["mode"] == "rec") | (ledger["game_date"] >= since)]
+        led = shown[cols].astype(object).where(pd.notna(shown[cols]), None)
+    else:
+        led = ledger
+    game_lines = [{k: v for k, v in t.items() if k != "sides"} | {"sides": list(t["sides"])} for t in table
+                  if t["market"] in OA.GAME_MARKETS]
+    order = {k: i for i, k in enumerate(MARKET_ORDER)}
+    scorecard = sorted(gate_info.values(), key=lambda g: (g["key"] == "news", g["status"] != "earned",
+                                                          order.get(g["key"].split(":")[0], 99), g["key"]))
     payload = {
         "generated_at": utc_now_iso(), "season": season,
         "settings": {"blend": BLEND, "min_ev": MIN_EV, "min_gap": MIN_GAP, "max_gap": MAX_GAP, "min_books": MIN_BOOKS, "kelly": KELLY,
                      "unit_pct": UNIT_PCT, "max_units": MAX_UNITS, "full_max_units": FULL_MAX_UNITS, "prop_overs": PROP_OVERS, "max_game_units": MAX_GAME_UNITS,
                      "max_day_picks": MAX_DAY_PICKS, "max_day_units": MAX_DAY_UNITS,
-                     "price_range": [MIN_PRICE, MAX_PRICE], "legal_books": sorted(OA.LEGAL_BOOKS), "bet_books": sorted(OA.BET_BOOKS)},
-        "current": picks, "candidates": len(cands), "added_this_run": added, "graded_this_run": graded,
-        "odds_as_of": max((v for k, v in fresh.items() if k in gmap), default=None),
+                     "price_range": [MIN_PRICE, MAX_PRICE], "legal_books": sorted(OA.LEGAL_BOOKS), "bet_books": sorted(OA.BET_BOOKS),
+                     "tracking": True, "gate": {"min_graded": GATE_MIN_GRADED, "min_clv": GATE_MIN_CLV,
+                                                "clv_z": GATE_CLV_Z}, "track_days": TRACK_DAYS},
+        "current": [c for c in picks if c["mode"] == "rec"],
+        "tracking": [c for c in picks if c["mode"] == "track"],
+        "candidates": len(cands), "added_this_run": added, "graded_this_run": graded,
+        "odds_as_of": max((c["fetched_at"] for c in picks if c.get("fetched_at")), default=None),
         "next_pull": pulled.get("reason") if pulled.get("status") == "skipped" else None,
         "game_lines": game_lines,
         "ledger": {"cols": cols, "rows": led.values.tolist() if len(led) else []},
-        "summary": summary(ledger) if len(ledger) else {"bets": 0, "graded": 0}, "by_kind": by_kind,
+        "summary": summary(real) if len(real) else {"bets": 0, "graded": 0}, "by_kind": by_kind,
         "by_market": by_market,
+        "tracked_summary": summary(tracked) if len(tracked) else {"bets": 0, "graded": 0},
+        "scorecard": scorecard,
     }
     write(out_dir / "bets.json", payload)
-    return {"picks": len(picks), "added": added, "graded": graded, "ledger": int(len(ledger)), "states": states}
+    return {"picks": len(payload["current"]), "tracked": len(payload["tracking"]), "added": added, "graded": graded,
+            "ledger": int(len(ledger)), "states": states}
