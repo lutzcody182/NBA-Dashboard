@@ -168,7 +168,11 @@ def simulate(home_rates, away_rates, *, pace: float, home_shift: float = 0.0, aw
 
     ph, pa = _Prepared(home_rates), _Prepared(away_rates)
 
-    def play(n_steps, mask_steps, idx):
+    half = n_game // 2                     # possessions each team has by halftime
+    h1_home = np.zeros(n_sims)
+    h1_away = np.zeros(n_sims)
+
+    def play(n_steps, mask_steps, idx, snap=False):
         for k in range(n_steps):
             live = mask_steps[idx] > k
             lead = home[idx] - away[idx]
@@ -177,9 +181,12 @@ def simulate(home_rates, away_rates, *, pace: float, home_shift: float = 0.0, aw
             lead = home[idx] - away[idx]
             a = _one_possession(pa, as_[idx] - lead_effect * lead, rng)
             away[idx] += np.where(live, a, 0)
+            if snap:
+                at = half[idx] == k + 1
+                h1_home[idx[at]], h1_away[idx[at]] = home[idx[at]], away[idx[at]]
 
     everyone = np.arange(n_sims)
-    play(n_max, n_game, everyone)
+    play(n_max, n_game, everyone, snap=True)
     ot = np.zeros(n_sims, int)
     n_ot = max(1, int(round(pace * 5 / 48)))
     for _ in range(4):                     # overtimes: 5 minutes at the same pace
@@ -204,9 +211,15 @@ def simulate(home_rates, away_rates, *, pace: float, home_shift: float = 0.0, aw
         "home_pts_q": {str(q): float(v) for q, v in zip(qs, np.quantile(home, qs))},
         "away_pts_q": {str(q): float(v) for q, v in zip(qs, np.quantile(away, qs))},
         "overtime": float((ot > 0).mean()),
+        "home_pts_sd": float(home.std()), "away_pts_sd": float(away.std()),
+        # first half (the first half of each game's possessions)
+        "h1": {"home_win": float((h1_home > h1_away).mean()), "tie": float((h1_home == h1_away).mean()),
+               "margin_mean": float((h1_home - h1_away).mean()), "margin_sd": float((h1_home - h1_away).std()),
+               "total_mean": float((h1_home + h1_away).mean()), "total_sd": float((h1_home + h1_away).std())},
     }
     if keep:
         out["_margin"], out["_total"], out["_home"], out["_away"] = margin, total, home, away
+        out["_h1_margin"], out["_h1_total"] = h1_home - h1_away, h1_home + h1_away
     return out
 
 
