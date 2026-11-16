@@ -805,6 +805,10 @@ async function getJSON(path) {
   if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
   return r.json();
 }
+// tracking mode (Nov 16, 2026): the ledger holds recommendations (mode "rec", or none on older rows) and tracked
+// picks (mode "track"). Everything about bets you place uses recommendations only; tracked picks show in the scorecard.
+function betLedger() { return fromCols(S.bets?.ledger).filter((b) => (b.mode ?? "rec") !== "track"); }
+function trackLedger() { return fromCols(S.bets?.ledger).filter((b) => b.mode === "track"); }
 function fromCols(t) {
   if (!t) return [];
   const { cols, rows } = t;
@@ -1940,13 +1944,18 @@ function initLineups() {
 }
 
 // ---------- bets ----------
-const STAT_WORD = { pts: "points", reb: "rebounds", ast: "assists", fg3m: "threes", pra: "pts+reb+ast", pr: "pts+reb", pa: "pts+ast", ra: "reb+ast" };
+const STAT_WORD = { pts: "points", reb: "rebounds", ast: "assists", fg3m: "threes", pra: "pts+reb+ast", pr: "pts+reb", pa: "pts+ast", ra: "reb+ast",
+  stl: "steals", blk: "blocks", stocks: "steals+blocks", tov: "turnovers", ftm: "free throws made", fgm: "field goals made" };
+for (const [k, v] of Object.entries({ ...STAT_WORD })) STAT_WORD["alt_" + k] = v + " (alt line)";
+const KIND_WORD = { moneyline_h1: "1st-half moneyline", spread_h1: "1st half", total_h1: "1st-half total", alt_spread: "alt", alt_total: "alt total" };
 function betLabel(b) {
   const home = b.home_team_id ?? S.simByGame[b.game_id]?.home_team_id, away = b.away_team_id ?? S.simByGame[b.game_id]?.away_team_id;
+  if (b.kind === "prop" && b.stat === "dd") return `${plink(b.player_id, b.player ?? pname(b.player_id))} double-double ${b.side === "over" ? "yes" : "no"}`;
   if (b.kind === "prop") return `${plink(b.player_id, b.player ?? pname(b.player_id))} ${b.side} ${fmt(b.line)} ${STAT_WORD[b.stat] ?? b.stat}`;
-  if (b.kind === "total") return `${abbr(away)} @ ${abbr(home)} ${b.side} ${fmt(b.line)}`;
+  if (b.kind === "total" || b.kind === "total_h1" || b.kind === "alt_total") return `${abbr(away)} @ ${abbr(home)} ${KIND_WORD[b.kind] ? KIND_WORD[b.kind] + " " : ""}${b.side} ${fmt(b.line)}`;
+  if (b.kind === "team_total") { const [t, sd] = b.side.split("_"); return `${abbr(t === "home" ? home : away)} team total ${sd} ${fmt(b.line)}`; }
   const team = b.side === "home" ? home : away;
-  return b.kind === "moneyline" ? `${abbr(team)} moneyline` : `${abbr(team)} ${b.line > 0 ? "+" : ""}${fmt(b.line)}`;
+  return b.kind.startsWith("moneyline") ? `${abbr(team)} ${KIND_WORD[b.kind] ?? "moneyline"}` : `${abbr(team)} ${KIND_WORD[b.kind] ? KIND_WORD[b.kind] + " " : ""}${b.line > 0 ? "+" : ""}${fmt(b.line)}`;
 }
 const betResultCell = (b) => `<span class="res-${b.status}">${b.status === "open" ? "Open" : b.status === "live" ? "Not locked" : b.status[0].toUpperCase() + b.status.slice(1)}</span>`;
 
@@ -2005,7 +2014,11 @@ const kvWarning = () => KV.mode === "memory" ? `<div class="bt-warn" style="bord
 
 // ---------- the odds you got (bet overrides) ----------
 const REPO = "lutzcody182/NBA-Dashboard";
-const MARKET_LABEL = { pts: "Points", reb: "Rebounds", ast: "Assists", fg3m: "Threes", pra: "Pts+Reb+Ast", pr: "Pts+Reb", pa: "Pts+Ast", ra: "Reb+Ast", moneyline: "Moneyline", spread: "Spread", total: "Total" };
+const MARKET_LABEL = { pts: "Points", reb: "Rebounds", ast: "Assists", fg3m: "Threes", pra: "Pts+Reb+Ast", pr: "Pts+Reb", pa: "Pts+Ast", ra: "Reb+Ast",
+  stl: "Steals", blk: "Blocks", stocks: "Steals+Blocks", tov: "Turnovers", ftm: "Free throws made", fgm: "Field goals made", dd: "Double-double",
+  moneyline: "Moneyline", spread: "Spread", total: "Total", team_total: "Team total", moneyline_h1: "1st-half moneyline", spread_h1: "1st-half spread",
+  total_h1: "1st-half total", alt_spread: "Alt spread", alt_total: "Alt total" };
+for (const k of ["pts", "reb", "ast", "fg3m", "pra", "pr", "pa", "ra", "stl", "blk", "tov"]) MARKET_LABEL["alt_" + k] = MARKET_LABEL[k] + " (alt)";
 const OV_BOOKS = ["DraftKings", "FanDuel", "BetMGM", "Caesars", "ESPN BET", "BetRivers", "Fanatics", "Hard Rock", "bet365", "Bally Bet", "betPARX", "Other"];
 function ovPending() { return { ...KV.get("ovPending", {}) }; }
 function ovSavePending(p) { const old = JSON.stringify(KV.get("ovPending", {})); if (JSON.stringify(p) !== old) KV.set("ovPending", p); }
@@ -2027,7 +2040,7 @@ function priceCell(b, pend) {
 }
 const ovButton = (b) => b.bet_id ? `<button type="button" class="ov-btn" data-ov="${b.bet_id}" title="Record the odds, line and book you actually got">${b.taken_price != null ? "Edit your odds" : "Got different odds?"}</button>` : "";
 function openOverride(id) {
-  const b = fromCols(S.bets.ledger).find((x) => x.bet_id === id); if (!b) return;
+  const b = betLedger().find((x) => x.bet_id === id); if (!b) return;
   const cur = { price: b.taken_price ?? b.price, line: b.taken_line ?? b.line, book: b.taken_book ?? bookName(b.book) };
   const known = OV_BOOKS.includes(cur.book);
   const showLine = b.kind !== "moneyline";
@@ -2123,7 +2136,7 @@ function recState(b) {
 function recRows() {
   if (!S.bets) return [];
   const big = (b) => BV.size === "all" || (b.units_full ?? b.units) >= 1;
-  return fromCols(S.bets.ledger).filter(big);
+  return betLedger().filter(big);
 }
 const recNeeds = (b, pend) => recState(b) !== "active" && placeState(b, pend) === "pending" && b.game_date >= etDate(-NEEDS_DAYS);
 function recStatusCell(b) {
@@ -2154,7 +2167,7 @@ const REC_HEAD = `<tr><th class="l">Recommended</th><th class="l">Bet</th><th cl
 function renderRecs() {
   const body = $("#rc-body"); if (!body) return;
   if (!S.bets) { body.innerHTML = `<div class="empty">Bets have not been published yet.</div>`; return; }
-  const all = fromCols(S.bets.ledger), pend = ovReconcile(all), R = recRows();
+  const all = betLedger(), pend = ovReconcile(all), R = recRows();
   const needs = R.filter((b) => recNeeds(b, pend)), active = R.filter((b) => recState(b) === "active");
   if (!RC.f) RC.f = needs.length ? "needs" : active.length ? "active" : "all";
   const graded = (x) => x.filter((b) => ["won", "lost", "push"].includes(b.status));
@@ -2180,7 +2193,7 @@ function renderRecs() {
   const list = R.filter((b) => fx(b) && (!RC.mk || mkt(b) === RC.mk || (RC.mk === "prop" && b.kind === "prop")))
     .sort((a, b) => (b.tip_utc ?? "").localeCompare(a.tip_utc ?? "") || b.created_at.localeCompare(a.created_at));
   const shown = RC.all ? list : list.slice(0, 60);
-  body.innerHTML = `${kvWarning()}<div class="bt-cards">${tiles}</div>
+  body.innerHTML = `${kvWarning()}${trackingHtml()}<h3 style="margin:18px 0 8px">Recommendations</h3><div class="bt-cards">${tiles}</div>
     <div class="controls">
       <div class="seg wrap" role="group" aria-label="Show" id="rc-f">${F.map(([k, l]) => `<button data-f="${k}" aria-pressed="${RC.f === k}">${l}</button>`).join("")}</div>
       <label class="ctl">Market<select id="rc-mk"><option value="">All markets</option><option value="prop" ${RC.mk === "prop" ? "selected" : ""}>All player props</option>${Object.entries(MARKET_LABEL).map(([k, l]) => `<option value="${k}" ${RC.mk === k ? "selected" : ""}>${l}</option>`).join("")}</select></label>
@@ -2191,12 +2204,46 @@ function renderRecs() {
       : `<div class="empty">Nothing here.</div>`}`;
   document.querySelectorAll("#rc-f button").forEach((x) => x.addEventListener("click", () => { RC.f = x.dataset.f; RC.all = false; renderRecs(); }));
   $("#rc-mk").addEventListener("input", (e) => { RC.mk = e.target.value; renderRecs(); });
+  $("#tk-more")?.addEventListener("click", () => { TK.all = !TK.all; renderRecs(); });
   document.querySelectorAll("#rc-size button").forEach((x) => x.addEventListener("click", () => { BV.size = x.dataset.size; KV.set("betSize", BV.size); betViewsChanged(); }));
   $("#rc-more")?.addEventListener("click", () => { RC.all = !RC.all; renderRecs(); });
   const an = $("#rc-allnot");
   an?.addEventListener("click", () => { if (!an.dataset.sure) { an.dataset.sure = "1"; an.textContent = `Sure? Mark ${list.length} as Not placed`; return; }
     for (const b of list) setMark(placedKey(b), "not"); betViewsChanged(); });
   recSeenUpdate();
+}
+// ---------- tracking mode: the scorecard, and picks tracked (not bets) ----------
+const TK = { all: false };
+function trackingHtml() {
+  const d = S.bets; if (!d?.settings?.tracking) return "";
+  const gt = d.settings.gate ?? {}, sc = d.scorecard ?? [];
+  const earned = sc.filter((g) => g.status === "earned" && g.key !== "news");
+  const pc = (v, dg = 1) => v == null ? "—" : pct(v, dg) + "%";
+  const rows = sc.map((g) => {
+    const wr = g.win_rate != null && g.expected != null ? `${pc(g.win_rate)} <small style="color:var(--muted)">vs ${pc(g.expected)}</small>` : "—";
+    const cls = g.win_rate != null && g.expected != null ? (g.win_rate >= g.expected ? "res-won" : "res-lost") : "";
+    return `<tr><td class="l">${esc(g.label)}</td><td>${g.graded}</td><td>${g.graded ? `${g.won}-${g.lost}` : "—"}</td><td class="${cls}">${wr}</td>
+      <td class="${g.avg_clv > 0 ? "res-won" : g.avg_clv < 0 ? "res-lost" : ""}">${g.avg_clv != null ? signed(100 * g.avg_clv, 2) : "—"}${g.clv_z != null ? ` <small style="color:var(--muted)">(${g.clv_z >= 0 ? "+" : ""}${fmt(g.clv_z, 1)} SE)</small>` : ""}</td>
+      <td>${g.beat_close != null ? pct(g.beat_close, 0) + "%" : "—"}</td>
+      <td class="${g.units > 0 ? "res-won" : g.units < 0 ? "res-lost" : ""}">${g.graded ? signed(g.units, 2) : "—"}</td>
+      <td class="l">${g.status === "earned" ? `<span class="rsb on">Earned: recommended</span>` : `<span class="rsb ex">Tracking</span><div class="rc-sub">needs ${esc(g.needs.join(", "))}</div>`}</td></tr>`;
+  }).join("");
+  const now = d.tracking ?? [];
+  const meta = (gid) => { const g = S.simByGame[gid]; return g ? { home_team_id: g.home_team_id, away_team_id: g.away_team_id, tip_utc: g.tip_utc, game_date: g.game_date } : {}; };
+  const open = trackLedger().filter((b) => b.status === "open").sort((a, b) => (a.tip_utc ?? "").localeCompare(b.tip_utc ?? ""));
+  const recent = trackLedger().filter((b) => ["won", "lost", "push", "void"].includes(b.status)).sort((a, b) => (b.tip_utc ?? "").localeCompare(a.tip_utc ?? ""));
+  const tRow = (b, live) => `<tr><td class="l"><b>${betLabel(b)}</b>${b.trigger === "news" ? ` <span class="rsb on" title="Picked on an odds pull triggered by injury or lineup news">news</span>` : ""}<div class="rc-sub">${esc(MARKET_LABEL[b.kind === "prop" ? b.stat : b.kind] ?? b.kind)} · ${abbr(b.away_team_id)} @ ${abbr(b.home_team_id)} · ${fmtDay(b.game_date)} ${fmtTime(b.tip_utc)}</div></td>
+    <td>${odds(b.price)} <small style="color:var(--muted)">${esc(bookName(b.book))}</small></td><td>${pct(b.p_model)}% <small style="color:var(--muted)">vs ${pct(b.p_market)}%</small></td>
+    <td>${fmt(b.units, 2)}u</td><td class="l">${live ? (b.status === "open" ? "Open" : "") : `<span class="res-${b.status}">${b.status[0].toUpperCase() + b.status.slice(1)}</span>${b.pnl != null ? ` ${signed(b.pnl, 2)}u` : ""}${b.clv != null ? ` <small style="color:var(--muted)">CLV ${signed(100 * b.clv, 1)}</small>` : ""}`}</td></tr>`;
+  const head = `<tr><th class="l">Pick (tracked, not a bet)</th><th>Price</th><th title="The model's chance against the market's">Model vs market</th><th>Stake if it were a bet</th><th class="l">Result</th></tr>`;
+  const shownRecent = TK.all ? recent : recent.slice(0, 40);
+  return `<div class="panel" style="margin-bottom:12px"><h3>Tracking mode</h3>
+    <p class="pr-note" style="margin:0 0 8px">Through about 450 graded bets the picks lost about 11% and did not beat the closing line, so <b>every pick is now tracked first</b>. A market only gets recommendations (shown below, sent to your phone, counted in your record) once its tracked picks earn it: at least ${gt.min_graded ?? 150} graded, ${gt.min_clv ?? 100} with a later price to compare, the closing line moving our way by at least ${gt.clv_z ?? 2} standard errors, and a win rate at least as high as the market's own chances. Unders and overs earn separately. Stakes on tracked picks are what the bet would have been, so the units read like real results.
+    ${earned.length ? `<b>Earned so far: ${earned.map((g) => esc(g.label)).join(", ")}.</b>` : "<b>No market has earned recommendations yet.</b>"} Right now ${now.length} pick${now.length === 1 ? "" : "s"} qualify at the latest prices; ${open.length} tracked pick${open.length === 1 ? " is" : "s are"} waiting on results.</p>
+    <div class="table-wrap"><table class="rctab"><thead><tr><th class="l">Market</th><th>Graded</th><th>Record</th><th title="How often the picks won, against the market's average chance for them">Win rate vs market</th><th title="Average closing-line value in points of chance, and how many standard errors from zero">CLV</th><th title="Share of picks where the market moved toward the pick by tip-off">Beat close</th><th>Units</th><th class="l">Status</th></tr></thead><tbody>${rows || `<tr><td class="l" colspan="8">Nothing graded yet.</td></tr>`}</tbody></table></div>
+    ${open.length ? `<h4 style="margin:14px 0 6px">Tracked picks for upcoming games</h4><div class="table-wrap"><table class="rctab"><thead>${head}</thead><tbody>${open.map((b) => tRow(b, true)).join("")}</tbody></table></div>` : ""}
+    ${recent.length ? `<details style="margin-top:12px"><summary>Recent tracked results (${recent.length}, last ${d.settings.track_days ?? 10} days)</summary><div class="table-wrap"><table class="rctab"><thead>${head}</thead><tbody>${shownRecent.map((b) => tRow(b, false)).join("")}</tbody></table></div>${recent.length > 40 ? `<button type="button" class="ov-btn" id="tk-more" style="margin-top:8px">${TK.all ? "Show fewer" : `Show all ${recent.length}`}</button>` : ""}</details>` : ""}
+  </div>`;
 }
 // placements changed somewhere: redraw whatever shows them
 function betViewsChanged() {
@@ -2214,7 +2261,7 @@ function recSeenUpdate() {     // remembers what was active the last time you lo
 }
 function recAskPaint() {
   const d = $("#rc-ask"), ids = new Set((d.dataset.ids || "").split(",").map(Number));
-  const all = fromCols(S.bets.ledger), pend = ovReconcile(all), R = all.filter((b) => ids.has(b.bet_id));
+  const all = betLedger(), pend = ovReconcile(all), R = all.filter((b) => ids.has(b.bet_id));
   $("#rc-ask-body").innerHTML = `<p class="pr-note" style="margin:0 0 10px">${R.length === 1 ? "This recommendation has" : "These recommendations have"} ended since you last looked (the price moved, the line changed, the edge dropped or the game started). Tell the tracker whether you bet ${R.length === 1 ? "it" : "them"}; if you got different odds, use "Got different odds?" after marking it placed. They stay on the Recommended Bets tab, so you can answer later too.</p>
     <div class="table-wrap"><table class="rctab"><thead>${REC_HEAD}</thead><tbody>${R.map((b) => recRowHtml(b, pend)).join("")}</tbody></table></div>`;
   const left = R.filter((b) => placeState(b, pend) === "pending").length;
@@ -2229,13 +2276,13 @@ function recAsk(list) {
 }
 function recBanner() {
   const el = $("#rc-banner"); if (!el) return;
-  const all = S.bets ? fromCols(S.bets.ledger) : [], pend = ovReconcile(all), n = recRows().filter((b) => recNeeds(b, pend)).length;
+  const all = S.bets ? betLedger() : [], pend = ovReconcile(all), n = recRows().filter((b) => recNeeds(b, pend)).length;
   el.innerHTML = n && location.hash.slice(1) !== "recs" ? `<div class="rc-banner">⚠️ <b>${n} recommended bet${n === 1 ? "" : "s"}</b> ended without an answer. Did you place ${n === 1 ? "it" : "them"}? <button type="button" class="ov-btn" id="rc-go">Review</button></div>` : "";
   $("#rc-go")?.addEventListener("click", () => { RC.f = "needs"; showView("recs"); });
 }
 function recCheck() {
   if (!S.bets) return;
-  const all = fromCols(S.bets.ledger), pend = ovReconcile(all), seen = recSeenGet();
+  const all = betLedger(), pend = ovReconcile(all), seen = recSeenGet();
   const ended = recRows().filter((b) => seen.has(b.bet_id) && recState(b) !== "active" && placeState(b, pend) === "pending" && !RC.asked.has(b.bet_id));
   if (ended.length) recAsk(ended);
   recSeenUpdate(); recBanner();
@@ -2295,9 +2342,9 @@ function renderBets() {
   const st = d.settings;
   const big = (b) => BV.size === "all" || (b.units_full ?? b.units) >= 1;
   document.querySelectorAll("#bt-size button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.size === BV.size)));
-  $("#bt-warn").innerHTML = `The model has no live track record yet, so every pick uses a chance that leans on the market: ${Math.round(100 * (st?.blend ?? 0.35))}% the model's, ${Math.round(100 * (1 - (st?.blend ?? 0.35)))}% the market's, and stakes are a quarter of the Kelly amount${st?.max_units != null ? `, capped at ${st.max_units} units while the model is unproven` : ""}.${st?.prop_overs === false ? " <b>Player prop overs are paused</b>: through the first 383 graded bets they lost in every band of model-vs-market difference, so only unders and game lines are recommended for now." : ""} Treat this as a test of the model, not proven advice: the ledger below and the "beat the closing line" rate are how you'll know whether it has an edge. Bet only what you can afford to lose. If gambling stops being fun, call or text 1-800-GAMBLER.`;
+  $("#bt-warn").innerHTML = (st?.tracking ? `<b>Tracking mode:</b> picks are tracked, not recommended, until their market earns it (see the scorecard on the Recommended Bets tab). This tab shows recommendations only, plus every bet from before tracking began. ` : "") + `The model has no live track record yet, so every pick uses a chance that leans on the market: ${Math.round(100 * (st?.blend ?? 0.35))}% the model's, ${Math.round(100 * (1 - (st?.blend ?? 0.35)))}% the market's, and stakes are a quarter of the Kelly amount${st?.max_units != null ? `, capped at ${st.max_units} units while the model is unproven` : ""}.${st?.prop_overs === false ? " <b>Player prop overs are paused</b>: through the first 383 graded bets they lost in every band of model-vs-market difference, so only unders and game lines are recommended for now." : ""} Treat this as a test of the model, not proven advice: the ledger below and the "beat the closing line" rate are how you'll know whether it has an edge. Bet only what you can afford to lose. If gambling stops being fun, call or text 1-800-GAMBLER.`;
   const card = (k, v, s, cls = "") => `<div class="bt-card"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="s">${s}</div></div>`;
-  const ledAll = fromCols(d.ledger);
+  const ledAll = betLedger();
   const pend = ovReconcile(ledAll);
   const led = ledAll.filter(big);
   const sm = betSummary(led);
@@ -3843,7 +3890,7 @@ async function init() {
   $("#d-day").addEventListener("input", (e) => { e.target.dataset.picked = e.target.selectedIndex === 0 && LIVE.day ? "" : "1"; });
   const prGames = [...new Set((S.props?.props ?? []).map((p) => p.game_id))];
   $("#pr-game").insertAdjacentHTML("beforeend", prGames.map((g) => `<option value="${esc(g)}">${esc(gameLabel(g))}</option>`).join(""));
-  $("#pr-stat").insertAdjacentHTML("beforeend", Object.entries(S.props?.stat_labels ?? {}).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""));
+  $("#pr-stat").insertAdjacentHTML("beforeend", Object.entries(S.props?.stat_labels ?? {}).filter(([k]) => !k.startsWith("alt_")).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join(""));
   ["#bt-kind", "#bt-status", "#bt-period"].forEach((sel) => $(sel).addEventListener("input", renderBets));
   document.querySelectorAll("#bt-size button").forEach((x) => x.addEventListener("click", () => {
     BV.size = x.dataset.size; KV.set("betSize", BV.size); renderBets(); }));
