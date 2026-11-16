@@ -51,7 +51,13 @@ ANCHOR_MIN_GAMES = 5
 LINEUP_UP = 5.0
 LINEUP_DOWN = 6.0
 STAT_LABEL = {"pts": "Points", "reb": "Rebounds", "ast": "Assists", "fg3m": "Threes", "pra": "Pts+Reb+Ast",
-              "pr": "Pts+Reb", "pa": "Pts+Ast", "ra": "Reb+Ast"}
+              "pr": "Pts+Reb", "pa": "Pts+Ast", "ra": "Reb+Ast", "stl": "Steals", "blk": "Blocks",
+              "stocks": "Steals+Blocks", "tov": "Turnovers", "ftm": "Free throws made", "fgm": "Field goals made",
+              "dd": "Double-double"}
+STAT_LABEL.update({f"alt_{k}": f"{v} (alt line)" for k, v in list(STAT_LABEL.items()) if k in
+                   ("pts", "reb", "ast", "fg3m", "pra", "pr", "pa", "ra", "stl", "blk", "tov")})
+# a one-sided alternate price (most alt lines are offered as an over only) has its margin taken out at this rate
+ALT_HOLD = 0.08
 
 TABLE = """
 CREATE TABLE IF NOT EXISTS prop_evals (
@@ -74,7 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_odds_game ON odds_snapshots(game_id, fetched_at);
 
 
 def calibration(conn, season_m: str) -> dict:
-    key = f"props-v2:{season_m}"
+    key = f"props-v3:{season_m}"   # v3 (Nov 16, 2026): steals, blocks, turnovers, made FT and FG
     row = conn.execute("SELECT payload FROM model_calibration WHERE key = ?", (key,)).fetchone()
     if row:
         return json.loads(row[0])
@@ -121,16 +127,18 @@ def _rosters(proj: dict, conn) -> dict:
 
 
 def _latest_odds(conn, game_ids, props: bool = True, legal_only: bool = True):
-    """Latest stored odds per game, player props or game lines, from state-licensed US books by default."""
+    """Latest stored odds per game and market, player props or game lines, from state-licensed US books by default.
+
+    Per market, because the extra markets are pulled less often than the main ones."""
     if not game_ids:
         return pd.DataFrame()
     q = ",".join("?" * len(game_ids))
     which = "player_id IS NOT NULL" if props else "player_id IS NULL"
     df = pd.read_sql_query(
         f"""SELECT o.* FROM odds_snapshots o
-            JOIN (SELECT game_id, MAX(fetched_at) AS f FROM odds_snapshots
-                  WHERE source = ? AND game_id IN ({q}) AND {which} GROUP BY game_id) m
-              ON m.game_id = o.game_id AND m.f = o.fetched_at
+            JOIN (SELECT game_id, market, MAX(fetched_at) AS f FROM odds_snapshots
+                  WHERE source = ? AND game_id IN ({q}) AND {which} GROUP BY game_id, market) m
+              ON m.game_id = o.game_id AND m.market = o.market AND m.f = o.fetched_at
             WHERE o.source = ? AND o.{which}""",
         conn, params=[OA.SOURCE, *game_ids, OA.SOURCE])
     if legal_only and not df.empty:
@@ -143,7 +151,8 @@ def market_table(odds: pd.DataFrame) -> list:
     if odds.empty:
         return []
     odds = odds.copy()
-    odds["stat"] = odds["market"].map(OA.MARKETS)
+    odds["stat"] = odds["market"].map(OA.PROP_MARKETS)
+    odds = odds[odds["stat"].notna() & ~odds["stat"].astype(str).str.startswith("alt_")]
     out = []
     for (gid, pid, stat), g in odds.groupby(["game_id", "player_id", "stat"]):
         # books with both sides at the same line
@@ -172,11 +181,74 @@ def market_table(odds: pd.DataFrame) -> list:
         bo = max(mine, key=lambda b: PM.decimal(b["over"])) if mine else {"over": None, "book": None}
         bu = max(mine, key=lambda b: PM.decimal(b["under"])) if mine else {"under": None, "book": None}
         out.append({"game_id": gid, "player_id": int(pid), "stat": stat, "line": float(line),
+                    "fetched_at": str(g["fetched_at"].max()) if "fetched_at" in g else None,
                     "fair_over": round(float(np.median([b["fair_over"] for b in books])), 4),
                     "books": sorted(books, key=lambda b: b["book"]),
                     "best_over": {"price": bo["over"], "book": bo["book"]},
                     "best_under": {"price": bu["under"], "book": bu["book"]},
                     "other_lines": sorted(float(l) for l in counts if l != line)})
+    return out
+
+
+def alt_fair(sides: dict):
+    """Fair over chance at one book and line: both sides with the margin removed, or an over alone at ALT_HOLD."""
+    if sides.get("over") is not None and sides.get("under") is not None:
+        return PM.devig(sides["over"], sides["under"])[0]
+    if sides.get("over") is not None:
+        return min(0.99, PM.implied(sides["over"]) / (1 + ALT_HOLD))
+    if sides.get("under") is not None:
+        return max(0.01, 1 - PM.implied(sides["under"]) / (1 + ALT_HOLD))
+    return None
+
+
+def alt_table(odds: pd.DataFrame, main_rows: list) -> list:
+    """Alternate player lines: every line other than the main one, with a fair chance and the best prices."""
+    if odds.empty:
+        return []
+    odds = odds.copy()
+    odds["stat"] = odds["market"].map(OA.PROP_MARKETS)
+    odds = odds[odds["stat"].astype(str).str.startswith("alt_")]
+    main = {(r["game_id"], r["player_id"], r["stat"]): r["line"] for r in main_rows}
+    out = []
+    for (gid, pid, stat, line), g in odds.groupby(["game_id", "player_id", "stat", "line"]):
+        base = stat[4:]
+        if main.get((gid, int(pid), base)) == float(line):
+            continue
+        books = []
+        for book, b in g.groupby("book"):
+            sides = {r.side: int(r.price_american) for r in b.itertuples()}
+            fair = alt_fair(sides)
+            if fair is not None:
+                books.append({"book": book, **sides, "fair_over": round(float(fair), 4)})
+        if not books:
+            continue
+        mine = [b for b in books if b["book"] in OA.BET_BOOKS]
+        best = {}
+        for side in ("over", "under"):
+            have = [b for b in mine if b.get(side) is not None]
+            bb = max(have, key=lambda b: PM.decimal(b[side])) if have else None
+            best[side] = {"price": bb[side] if bb else None, "book": bb["book"] if bb else None}
+        out.append({"game_id": gid, "player_id": int(pid), "stat": stat, "base_stat": base, "line": float(line),
+                    "fetched_at": str(g["fetched_at"].max()) if "fetched_at" in g else None,
+                    "fair_over": round(float(np.median([b["fair_over"] for b in books])), 4),
+                    "books": sorted(books, key=lambda b: b["book"]),
+                    "best_over": best["over"], "best_under": best["under"], "alt": True})
+    return out
+
+
+def fingerprints(proj: dict, lineups: dict) -> dict:
+    """game_id -> a short text of who is out, doubtful or questionable and the confirmed starters: when it
+    changes, there is news the books may not have priced yet."""
+    out = {}
+    for g in (proj or {}).get("games", []):
+        parts = []
+        for tid, t in sorted(g.get("teams", {}).items()):
+            st = sorted(f"{p['player_id']}:{p.get('status')}" for p in t.get("players", [])
+                        if p.get("status") in ("out", "doubtful", "questionable"))
+            lu = (lineups or {}).get((g["game_id"], int(tid)))
+            starters = sorted(lu["starters"]) if lu and lu.get("status") == "confirmed" else []
+            parts.append(f"{tid}|{','.join(st)}|{','.join(map(str, starters))}")
+        out[g["game_id"]] = ";".join(parts)
     return out
 
 
@@ -198,8 +270,11 @@ def model_inputs(proj: dict, sims: dict) -> dict:
                 m_if = p.get("min_if_plays") or p.get("min")
                 if not m_if:
                     continue
-                base = {s: sp.get(s, 0.0) for s in ("pts", "reb", "ast", "fg3m")}
-                rates = {s: sum(base[x] for x in parts) / sp["min"] for s, parts in PM.STATS.items()}
+                base = {s: sp[s] for s in PM.BASE_STATS if sp.get(s) is not None}
+                for s in ("pts", "reb", "ast", "fg3m"):
+                    base.setdefault(s, 0.0)
+                rates = {s: sum(base[x] for x in parts) / sp["min"] for s, parts in PM.STATS.items()
+                         if all(x in base for x in parts)}
                 # p10/p90 are the minutes model's range around minutes-if-he-plays
                 p10 = p.get("p10") if p.get("p10") is not None else m_if - 6
                 p90 = p.get("p90") if p.get("p90") is not None else m_if + 6
@@ -214,13 +289,15 @@ def player_history(conn, season: str) -> dict:
     """player_id -> {"m5": last-5 minutes, "games": n, "rate": {stat: per-minute rate}} from this season and last."""
     from ..models.game_model import prev_season
     df = pd.read_sql_query(
-        """SELECT s.player_id, s.team_id, s.started, g.game_date, s.seconds / 60.0 AS m, s.pts, s.oreb + s.dreb AS reb, s.ast, s.fg3m
+        """SELECT s.player_id, s.team_id, s.started, g.game_date, s.seconds / 60.0 AS m, s.pts, s.oreb + s.dreb AS reb, s.ast, s.fg3m,
+                  s.stl, s.blk, s.tov, s.ftm, s.fgm
            FROM player_game_stats s JOIN games g ON g.game_id = s.game_id
            WHERE g.season_id IN (?, ?) AND g.season_type = 'regular' AND g.status = 'final' AND s.seconds > 0""",
         conn, params=[season, prev_season(season)])
     if df.empty:
         return {}
-    base = ("pts", "reb", "ast", "fg3m")
+    base = PM.BASE_STATS
+    df[list(base)] = df[list(base)].fillna(0)
     lg = {k: df[k].sum() / df["m"].sum() for k in base}
     out = {}
     for pid, h in df.sort_values("game_date").groupby("player_id"):
@@ -253,8 +330,12 @@ def anchor_inputs(inputs: dict, hist: dict, lineups: dict = None) -> dict:
                 role = "confirmed starter" if starts else "confirmed bench"
         m = float(np.clip(m, 1.0, 48.0))
         shift = m - x["min"]
-        base = {k: (1 - RATE_LONG) * x["rates"][k] + RATE_LONG * h["rate"][k] for k in ("pts", "reb", "ast", "fg3m")}
-        rates = {s: sum(base[p] for p in parts) for s, parts in PM.STATS.items()}
+        # stats the simulation doesn't hand out (steals, blocks, made FT/FG) come from his own record
+        hr = h["rate"]
+        base = {k: ((1 - RATE_LONG) * x["rates"][k] + RATE_LONG * hr[k]) if k in x["rates"] and k in hr
+                else x["rates"][k] if k in x["rates"] else hr[k]
+                for k in PM.BASE_STATS if k in x["rates"] or k in hr}
+        rates = {s: sum(base[p] for p in parts) for s, parts in PM.STATS.items() if all(p in base for p in parts)}
         out[key] = {**x, "min": m, "p10": max(0.0, min(x["p10"] + shift, m)), "p90": max(x["p90"] + shift, m),
                     "rates": rates, "model_min": x["min"], **({"lineup": role} if role else {})}
     return out
@@ -268,14 +349,29 @@ def compare(rows: list, inputs: dict, disp: dict) -> list:
             r.update({"model": None})
             out.append(r)
             continue
-        rate, shape = x["rates"][r["stat"]], disp[r["stat"]]
-        po, pu, push = PM.over_under(r["line"], rate, shape, x["min"], x["p10"], x["p90"])
+        stat = r.get("base_stat", r["stat"])
+        if stat == "dd":
+            if not all(s in x["rates"] for s in PM.DD_PARTS):
+                r.update({"model": None})
+                out.append(r)
+                continue
+            rate = None
+            po = PM.double_double(x["rates"], disp, x["min"], x["p10"], x["p90"])
+            pu, push = 1.0 - po, 0.0
+        else:
+            if stat not in x["rates"] or stat not in disp:
+                r.update({"model": None})
+                out.append(r)
+                continue
+            rate, shape = x["rates"][stat], disp[stat]
+            po, pu, push = PM.over_under(r["line"], rate, shape, x["min"], x["p10"], x["p90"])
         bo_p, bu_p = r["best_over"]["price"], r["best_under"]["price"]
         dec_o, dec_u = (PM.decimal(bo_p) if bo_p is not None else None), (PM.decimal(bu_p) if bu_p is not None else None)
         fair_o = r["fair_over"]
         # compare like with like: the model's over chance among results that are not a push
         po_np = po / (po + pu) if po + pu > 0 else None
-        r["model"] = {"mean": round(rate * x["min"], 2), "min": round(x["min"], 1), "p_over": round(po, 4),
+        r["model"] = {"mean": round(rate * x["min"], 2) if rate is not None else round(po, 3),
+                      "min": round(x["min"], 1), "p_over": round(po, 4),
                       "p_under": round(pu, 4), "p_push": round(push, 4),
                       "edge_over": round(po_np - fair_o, 4) if po_np is not None else None,
                       "ev_over": round(po * (dec_o - 1) - pu, 4) if dec_o else None,
@@ -293,7 +389,8 @@ def save_evals(conn, fetched_at: str, rows: list):
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [(fetched_at, r["game_id"], r["player_id"], r["stat"], r["line"], r["model"]["mean"], r["model"]["p_over"],
           r["model"]["p_under"], r["fair_over"], len(r["books"]), r["best_over"]["price"], r["best_over"]["book"],
-          r["best_under"]["price"], r["best_under"]["book"]) for r in rows if r.get("model")])
+          r["best_under"]["price"], r["best_under"]["book"]) for r in rows
+         if r.get("model") and r.get("fetched_at", fetched_at) == fetched_at])
     conn.commit()
 
 
@@ -311,7 +408,7 @@ def track_record(conn, season: str) -> dict:
     logs = logs[logs["game_id"].isin(df["game_id"].unique())].copy()
     for s, parts in PM.STATS.items():
         logs[s] = sum(logs[p] for p in parts)
-    long = logs.melt(id_vars=["game_id", "player_id", "min"], value_vars=list(PM.STATS), var_name="stat",
+    long = logs.melt(id_vars=["game_id", "player_id", "min"], value_vars=[*PM.STATS, "dd"], var_name="stat",
                      value_name="actual")
     m = df.merge(long, on=["game_id", "player_id", "stat"], how="inner")
     m = m[m["min"] > 0]
@@ -354,7 +451,7 @@ def track_record(conn, season: str) -> dict:
                          "actual": round(float(x["over"].mean()), 3)})
     return {"graded": int(len(m)), "games": int(m["game_id"].nunique()),
             "first": str(m["fetched_at"].min())[:10], "last": str(m["fetched_at"].max())[:10],
-            "overall": summary(m), "by_stat": {s: summary(m[m["stat"] == s]) for s in PM.STATS if (m["stat"] == s).any()},
+            "overall": summary(m), "by_stat": {s: summary(m[m["stat"] == s]) for s in [*PM.STATS, "dd"] if (m["stat"] == s).any()},
             "picks": [picks(m, t) for t in (0.03, 0.05, 0.08)], "calibration": bins}
 
 
@@ -372,8 +469,15 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
     except Exception as exc:
         log.warning("Lineups not read: %s", exc)
         lineup_status = {"status": "error", "error": str(exc)[:200]}
+    upcoming = [g["game_id"] for g in games]
     try:
-        pulled = OA.pull(conn, games, _rosters(proj, conn), now=now, et_day=today_et().isoformat())
+        lineups = NL.latest(conn, set(upcoming))
+    except Exception:
+        log.exception("Reading stored lineups failed")
+        lineups = {}
+    try:
+        pulled = OA.pull(conn, games, _rosters(proj, conn), now=now, et_day=today_et().isoformat(),
+                         fingerprints=fingerprints(proj, lineups))
     except Exception as exc:
         log.exception("Odds pull failed")
         pulled = {"status": "error", "errors": [str(exc)]}
@@ -386,19 +490,17 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
                            f"{int(pulled['remaining']) if pulled.get('remaining') is not None else '?'} credits left")
     elif pulled["status"] == "error":
         dbmod.mark_attempt(conn, "odds", False, "; ".join(pulled.get("errors", []))[:400])
-    upcoming = [g["game_id"] for g in games]
-    rows = market_table(_latest_odds(conn, upcoming))
+    odds = _latest_odds(conn, upcoming)
+    rows = market_table(odds)
+    alt_rows = alt_table(odds, rows)
     try:
         hist = player_history(conn, season)
     except Exception:
         log.exception("Player history for props failed; using the unanchored inputs")
         hist = {}
-    try:
-        lineups = NL.latest(conn, set(upcoming))
-    except Exception:
-        log.exception("Reading stored lineups failed")
-        lineups = {}
-    rows = compare(rows, anchor_inputs(model_inputs(proj, sims), hist, lineups), cal["shapes"])
+    inputs = anchor_inputs(model_inputs(proj, sims), hist, lineups)
+    rows = compare(rows, inputs, cal["shapes"])
+    alt_rows = compare(alt_rows, inputs, cal["shapes"])
     if pulled["status"] == "stored":
         save_evals(conn, pulled["fetched_at"], rows)
     fetched = {r[0]: r[1] for r in conn.execute(
@@ -426,5 +528,5 @@ def export(conn, out_dir, season: str, games: list, proj: dict, sims: dict, writ
                    "markets": len(OA.MARKETS), "reserve": OA.RESERVE_CREDITS},
     }
     write(out_dir / "props.json", payload)
-    return {"status": pulled["status"], "reason": pulled.get("reason"), "props": len(rows),
-            "_rows": rows, "_pulled": pulled}
+    return {"status": pulled["status"], "reason": pulled.get("reason"), "props": len(rows), "alt_lines": len(alt_rows),
+            "_rows": rows, "_alt_rows": alt_rows, "_pulled": pulled}
