@@ -38,17 +38,38 @@ def test_candidate_needs_model_on_its_side():
 def test_selection_caps():
     cands = []
     for i in range(30):
-        cands.append({"kind": "prop", "game_id": f"g{i % 3}", "player_id": i % 7, "side": "over", "ev": 0.05 + i / 1000,
-                      "units": 1.0})
-    picks = B.select(cands)
+        cands.append({"kind": "prop", "game_id": f"g{i % 3}", "player_id": i % 7, "stat": "pts", "side": "under",
+                      "ev": 0.05 + i / 1000, "units": 1.0, "gate": "pts:under"})
+    earned = {"pts:under": {"status": "earned"}}
+    picks = B.select([dict(c) for c in cands], earned)
     # no daily limit: every player's best prop is kept (one per player per game), stakes scaled to the game cap
     keys = {(c["game_id"], c["player_id"]) for c in cands}
-    assert len(picks) == len(keys)
+    assert len(picks) == len(keys) and all(p["mode"] == "rec" for p in picks)
     for g in ("g0", "g1", "g2"):
         n = sum(1 for p in picks if p["game_id"] == g)
         assert sum(p["units"] for p in picks if p["game_id"] == g) <= max(B.MAX_GAME_UNITS, 0.25 * n)
     keys = [(p["game_id"], p["player_id"]) for p in picks]
     assert len(keys) == len(set(keys))
+    # nothing earned: the same picks are only tracked, at their own stakes (no game cap)
+    tracked = B.select([dict(c) for c in cands], {})
+    assert len(tracked) == len(picks) and all(p["mode"] == "track" and p["units"] == 1.0 for p in tracked)
+
+
+def test_gates():
+    rows = []
+    for i in range(200):          # under picks: closing line moves our way, they win a bit more than expected
+        rows.append({"kind": "prop", "stat": "pts", "side": "under", "status": "won" if i % 100 < 55 else "lost",
+                     "p_market": 0.5, "clv": 0.01 + (0.005 if i % 2 else -0.005), "units": 0.5,
+                     "pnl": 0.45 if i % 100 < 55 else -0.5, "gate": None, "trigger": None})
+    for i in range(200):          # over picks: no closing-line edge
+        rows.append({"kind": "prop", "stat": "pts", "side": "over", "status": "won" if i % 2 else "lost",
+                     "p_market": 0.5, "clv": 0.01 if i % 2 else -0.01, "units": 0.5, "pnl": 0.45 if i % 2 else -0.5,
+                     "gate": None, "trigger": None})
+    g = B.gates(pd.DataFrame(rows))
+    assert g["pts:under"]["status"] == "earned" and g["pts:under"]["needs"] == []
+    assert g["pts:over"]["status"] == "tracking" and g["pts:over"]["graded"] == 200
+    assert B.gate_key("team_total", None, "home_over") == "team_total:over"
+    assert B._earned({"gate": "pts:under"}, g) and not B._earned({"gate": "pts:over"}, g)
 
 
 def test_game_market_table_spread_pairs():
@@ -131,15 +152,18 @@ def test_track_states(tmp_path):
     assert B.track(conn, [], [], [], [], games, "2026-11-03T20:00:00Z") == {}      # nothing priced: nothing changes
 
 
-def test_stake_cap_and_prop_overs_paused():
+def test_stake_cap_and_overs_tracked():
     c = B._candidate("prop", "g", "under", 20.5, 120, "fanduel", 0.62, 0.53, 0.0, 5, player_id=7, stat="pts")
     assert c is not None and c["units"] == B.MAX_UNITS == 0.5 and c["units_full"] > c["units"]
+    assert c["gate"] == "pts:under"
     row = {"game_id": "g", "player_id": 7, "stat": "pts", "line": 20.5, "fair_over": 0.40,
            "books": [{"book": b} for b in ("fanduel", "draftkings", "betmgm")],
            "best_over": {"price": 140, "book": "fanduel"}, "best_under": {"price": -170, "book": "fanduel"},
            "model": {"p_over": 0.50, "p_under": 0.50, "games": 20, "status": "available", "mean": 20, "min": 30}}
     assert B.PROP_OVERS is False
-    assert B.prop_candidates([row]) == []                # the model likes the over here, but overs are paused
-    row["fair_over"] = 0.58                              # now the model likes the under: still recommended
-    out = B.prop_candidates([{**row, "best_under": {"price": 140, "book": "fanduel"}}])
-    assert [c["side"] for c in out] == ["under"] and out[0]["units"] <= 0.5
+    out = B.prop_candidates([row])                       # overs are tracked again (Nov 16, 2026) ...
+    assert [c["side"] for c in out] == ["over"]
+    picks = B.select(out, {})                            # ... but only earn a recommendation through the gate
+    assert picks[0]["mode"] == "track"
+    alt = {**row, "stat": "alt_pts", "line": 25.5, "alt": True, "books": [{"book": "fanduel"}, {"book": "fanatics"}]}
+    assert [c["stat"] for c in B.prop_candidates([alt])] == ["alt_pts"]      # alternates need only two books
