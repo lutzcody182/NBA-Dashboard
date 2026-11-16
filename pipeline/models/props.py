@@ -29,7 +29,11 @@ from scipy.special import gammaln
 STATS = {
     "pts": ("pts",), "reb": ("reb",), "ast": ("ast",), "fg3m": ("fg3m",),
     "pra": ("pts", "reb", "ast"), "pr": ("pts", "reb"), "pa": ("pts", "ast"), "ra": ("reb", "ast"),
+    # tracked since Nov 16, 2026
+    "stl": ("stl",), "blk": ("blk",), "stocks": ("stl", "blk"), "tov": ("tov",), "ftm": ("ftm",), "fgm": ("fgm",),
 }
+BASE_STATS = ("pts", "reb", "ast", "fg3m", "stl", "blk", "tov", "ftm", "fgm")
+DD_PARTS = ("pts", "reb", "ast")      # a double-double here: 10+ in two of these (steals/blocks almost never count)
 K_GRID = np.round(np.exp(np.linspace(np.log(0.5), np.log(400), 60)), 3)
 PRIOR_MIN = 60.0          # minutes of league-average play mixed into each rate
 WINDOW = 20
@@ -39,9 +43,14 @@ Z90 = 1.2816
 def _with_stats(logs: pd.DataFrame) -> pd.DataFrame:
     df = logs.copy()
     for s, parts in STATS.items():
-        if s not in df or len(parts) > 1:
+        if (s not in df or len(parts) > 1) and all(p in df for p in parts):
             df[s] = sum(df[p] for p in parts)
     return df
+
+
+def _have(df) -> list:
+    """The stats these logs can score (older test data has only the main four)."""
+    return [s for s in STATS if s in df]
 
 
 def prior_rates(logs: pd.DataFrame) -> pd.DataFrame:
@@ -50,8 +59,8 @@ def prior_rates(logs: pd.DataFrame) -> pd.DataFrame:
     g = df.groupby("player_id")
     df["prior_min"] = g["min"].transform(lambda s: s.shift().rolling(WINDOW, min_periods=1).sum())
     df["l10_min"] = g["min"].transform(lambda s: s.shift().rolling(10, min_periods=3).mean())
-    lg = {s: df[s].sum() / df["min"].sum() for s in STATS}
-    for s in STATS:
+    lg = {s: df[s].sum() / df["min"].sum() for s in _have(df)}
+    for s in _have(df):
         prior = g[s].transform(lambda x: x.shift().rolling(WINDOW, min_periods=1).sum())
         df[f"rate_{s}"] = (prior.fillna(0) + PRIOR_MIN * lg[s]) / (df["prior_min"].fillna(0) + PRIOR_MIN)
     return df
@@ -66,7 +75,7 @@ def fit_dispersion(logs: pd.DataFrame, min_minutes=8.0, min_prior=100.0) -> dict
     df = prior_rates(logs)
     df = df[(df["min"] >= min_minutes) & (df["prior_min"] >= min_prior)]
     out = {}
-    for s in STATS:
+    for s in _have(df):
         x, mu = df[s].to_numpy(float), (df[f"rate_{s}"] * df["min"]).to_numpy(float)
         ll = [float(nb_logpmf(x, mu, k).sum()) for k in K_GRID]
         i = int(np.argmax(ll))
@@ -125,13 +134,25 @@ def over_under(line: float, rate: float, shape, min_mean: float, p10: float, p90
     return 1.0 - under - push, under, push
 
 
+def double_double(rates: dict, shapes: dict, min_mean: float, p10: float, p90: float) -> float:
+    """Chance of 10+ in at least two of points, rebounds and assists if he plays.
+
+    The three are treated as independent once minutes are fixed; minutes carry most of what ties them."""
+    mins, w = minutes_points(min_mean, p10, p90)
+    hit = [1.0 - _cdf(9.5, rates[s] * mins, shapes[s] if isinstance(shapes[s], dict) else
+                      {"shape": "nb", "k": float(shapes[s])}) for s in DD_PARTS]
+    a, b, c = hit
+    two = a * b + a * c + b * c - 2 * a * b * c
+    return float(w @ two)
+
+
 def _known_minutes(logs, min_minutes=15.0, seed=1):
     """Player-games with mean = prior rate x actual minutes, and a line near that mean."""
     df = prior_rates(logs)
     df = df[(df["min"] >= min_minutes) & (df["prior_min"] >= 100)]
     rng = np.random.default_rng(seed)
     out = {}
-    for s in STATS:
+    for s in _have(df):
         mu = (df[f"rate_{s}"] * df["min"]).to_numpy(float)
         x = df[s].to_numpy(float)
         line = np.floor(mu + rng.uniform(-0.5, 0.5, len(mu)) * np.maximum(1.0, 0.25 * mu)) + 0.5
@@ -162,7 +183,7 @@ def fit_shapes(train_logs: pd.DataFrame, test_logs: pd.DataFrame) -> dict:
     nb_tr, nb_te = fit_dispersion(train_logs), fit_dispersion(test_logs)
     tr, te = _known_minutes(train_logs), _known_minutes(test_logs, seed=2)
     out = {}
-    for s in STATS:
+    for s in [s for s in STATS if s in nb_tr and s in nb_te]:
         cand = {"nb": {"shape": "nb", "k": nb_tr[s]["k"]}, "skewed": fit_skewed(*tr[s])}
         mu, x, line = te[s]
         scores = {n: _brier(c, mu, x, line) for n, c in cand.items()}
