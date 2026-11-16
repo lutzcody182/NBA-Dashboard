@@ -20,7 +20,11 @@ SITE = "https://lutzcody182.github.io/NBA-Dashboard/#bets"
 STATE_KEY = "ntfy:last_bet_id"
 ET = ZoneInfo("America/New_York")
 STAT_WORD = {"pts": "points", "reb": "rebounds", "ast": "assists", "fg3m": "threes", "pra": "pts+reb+ast",
-             "pr": "pts+reb", "pa": "pts+ast", "ra": "reb+ast"}
+             "pr": "pts+reb", "pa": "pts+ast", "ra": "reb+ast", "stl": "steals", "blk": "blocks",
+             "stocks": "steals+blocks", "tov": "turnovers", "ftm": "free throws made", "fgm": "field goals made"}
+STAT_WORD.update({f"alt_{k}": f"{v} (alt)" for k, v in list(STAT_WORD.items())})
+KIND_WORD = {"moneyline_h1": "1st-half moneyline", "spread_h1": "1st half", "total_h1": "1st-half total",
+             "alt_spread": "alt", "alt_total": "alt total", "team_total": "team total"}
 BOOKS = {"draftkings": "DraftKings", "fanduel": "FanDuel", "betmgm": "BetMGM", "williamhill_us": "Caesars",
          "caesars": "Caesars", "espnbet": "theScore Bet", "thescore": "theScore Bet", "betrivers": "BetRivers", "fanatics": "Fanatics",
          "hardrockbet": "Hard Rock", "ballybet": "Bally Bet", "betparx": "betPARX", "pointsbetus": "PointsBet",
@@ -40,14 +44,19 @@ def _num(x) -> str:
 
 def bet_line(b: dict, abbr: dict, names: dict) -> str:
     home, away = abbr.get(b["home_team_id"], "?"), abbr.get(b["away_team_id"], "?")
-    if b["kind"] == "prop":
+    if b["kind"] == "prop" and b["stat"] == "dd":
+        what = f"{names.get(b['player_id'], b['player_id'])} double-double {'yes' if b['side'] == 'over' else 'no'}"
+    elif b["kind"] == "prop":
         what = f"{names.get(b['player_id'], b['player_id'])} {b['side']} {_num(b['line'])} {STAT_WORD.get(b['stat'], b['stat'])}"
-    elif b["kind"] == "total":
-        what = f"{away} @ {home} {b['side']} {_num(b['line'])}"
+    elif b["kind"] in ("total", "total_h1", "alt_total"):
+        what = f"{away} @ {home} {KIND_WORD.get(b['kind'], '')} {b['side']} {_num(b['line'])}".replace("  ", " ")
+    elif b["kind"] == "team_total":
+        t, sd = b["side"].split("_")
+        what = f"{home if t == 'home' else away} team total {sd} {_num(b['line'])}"
     else:
         team = home if b["side"] == "home" else away
-        what = f"{team} moneyline" if b["kind"] == "moneyline" else \
-            f"{team} {'+' if b['line'] > 0 else ''}{_num(b['line'])}"
+        what = f"{team} {KIND_WORD.get(b['kind'], 'moneyline')}" if b["kind"].startswith("moneyline") else \
+            f"{team} {KIND_WORD.get(b['kind'], '')} {'+' if b['line'] > 0 else ''}{_num(b['line'])}".replace("  ", " ")
     units = f"{float(b['units']):g}u"
     return f"{what} {_odds(b['price'])} · {units} · {BOOKS.get(b['book'], b['book'])}"
 
@@ -65,13 +74,19 @@ def pending(conn, now_iso: str) -> list:
         top = conn.execute("SELECT COALESCE(MAX(bet_id), 0) FROM bets").fetchone()[0]
         _save(conn, top)
         return []
+    # tracking mode: only recommendations are sent; tracked picks never are
+    rec_only = "AND COALESCE(b.mode, 'rec') = 'rec'" if _has_mode(conn) else ""
     cur = conn.execute(
-        """SELECT b.bet_id, b.kind, b.player_id, b.stat, b.side, b.line, b.price, b.book, b.units, b.ev,
+        f"""SELECT b.bet_id, b.kind, b.player_id, b.stat, b.side, b.line, b.price, b.book, b.units, b.ev,
                   g.home_team_id, g.away_team_id, g.tip_utc
            FROM bets b JOIN games g ON g.game_id = b.game_id
-           WHERE b.bet_id > ? ORDER BY g.tip_utc, b.bet_id""", (last,))
+           WHERE b.bet_id > ? {rec_only} ORDER BY g.tip_utc, b.bet_id""", (last,))
     cols = [c[0] for c in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _has_mode(conn) -> bool:
+    return any(r[1] == "mode" for r in conn.execute("PRAGMA table_info(bets)"))
 
 
 def _save(conn, bet_id: int) -> None:
@@ -111,11 +126,17 @@ def heartbeat(conn, notified: dict, topic=None, now_iso=None, session=None) -> d
     if (notified or {}).get("status") == "sent":
         return {"status": "skipped", "reason": "picks were sent"}
     now_iso = now_iso or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tracked = None
     try:
+        rec_only = "AND COALESCE(b.mode, 'rec') = 'rec'" if _has_mode(conn) else ""
         active = conn.execute(
-            """SELECT COUNT(*), COALESCE(SUM(b.units), 0) FROM bets b JOIN games g ON g.game_id = b.game_id
-               WHERE b.status = 'open' AND COALESCE(b.rec_state, 'active') = 'active' AND g.tip_utc > ?""",
+            f"""SELECT COUNT(*), COALESCE(SUM(b.units), 0) FROM bets b JOIN games g ON g.game_id = b.game_id
+               WHERE b.status = 'open' AND COALESCE(b.rec_state, 'active') = 'active' AND g.tip_utc > ? {rec_only}""",
             (now_iso,)).fetchone()
+        if rec_only:
+            tracked = conn.execute(
+                """SELECT COUNT(*) FROM bets b JOIN games g ON g.game_id = b.game_id
+                   WHERE b.mode = 'track' AND g.tip_utc > ?""", (now_iso,)).fetchone()[0]
     except Exception:
         active = None
     when = datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone(ET)
@@ -128,6 +149,8 @@ def heartbeat(conn, notified: dict, topic=None, now_iso=None, session=None) -> d
                      "already sent earlier.")
     elif active is not None:
         lines.append("Nothing is recommended right now.")
+    if tracked:
+        lines.append(f"Tracking {tracked} pick{'s' if tracked != 1 else ''} for upcoming games (not bets).")
     if problem:
         lines.append("New picks could not be sent this time; they will be retried next run.")
     lines.append("Next check in about 15 minutes.")
