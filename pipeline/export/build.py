@@ -408,7 +408,7 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
     try:
         from . import props as props_export
         res = props_export.export(conn, out_dir, season, games, proj, sims, _write)
-        prop_rows, pulled = res.pop("_rows", []), res.pop("_pulled", {})
+        prop_rows, pulled = res.pop("_rows", []) + res.pop("_alt_rows", []), res.pop("_pulled", {})
         out["props"] = res
         out["files"].append("props.json")
     except Exception as exc:
@@ -420,7 +420,7 @@ def export_phase2(conn, out_dir: Path, season: str, prev: str, team_tables: dict
         from . import bets as bets_export
         out["bets"] = bets_export.export(conn, out_dir, season, games, sims, prop_rows, pulled, _write)
         out["files"].append("bets.json")
-        dbmod.mark_attempt(conn, "bets", True, f"{out['bets']['picks']} picks now; {out['bets']['added']} added, "
+        dbmod.mark_attempt(conn, "bets", True, f"{out['bets']['picks']} recommended and {out['bets']['tracked']} tracked now; {out['bets']['added']} added, "
                            f"{out['bets']['graded']} graded this run; {out['bets']['ledger']} on the ledger")
     except Exception as exc:
         log.exception("Bets failed")
