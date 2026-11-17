@@ -17,6 +17,10 @@ from .ingest.update import (PLAYS_FROM_YEAR, backfill_plays, backfill_regular_se
                             update_current_season)
 from .providers.nba_cdn import NbaCdnProvider
 
+# The quiet "Run done" phone note after runs with no new picks. Off since Nov 16, 2026 (tracking mode):
+# the phone only hears about recommended bets. Set to True to get the run notes again.
+RUN_DONE_NOTES = False
+
 
 def _last_completed_start_year(now=None) -> int:
     """Start year of the most recent finished regular season (2025 for 2025-26 once it is over)."""
@@ -130,11 +134,14 @@ def main(argv=None) -> int:
             result["notify"] = notify_new_bets(conn)
         except Exception as exc:          # a notification problem must never stop the site updating
             result["notify"] = {"status": "error", "error": str(exc)}
-        from .notify import heartbeat
-        try:
-            result["heartbeat"] = heartbeat(conn, result["notify"])
-        except Exception as exc:
-            result["heartbeat"] = {"status": "error", "error": str(exc)}
+        if RUN_DONE_NOTES:
+            from .notify import heartbeat
+            try:
+                result["heartbeat"] = heartbeat(conn, result["notify"])
+            except Exception as exc:
+                result["heartbeat"] = {"status": "error", "error": str(exc)}
+        else:
+            result["heartbeat"] = {"status": "off"}
     conn.close()
     print(json.dumps(result, indent=2, default=str))
 
