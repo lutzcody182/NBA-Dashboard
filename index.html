@@ -2229,6 +2229,39 @@ function trackingHtml() {
       <td class="l">${g.status === "earned" ? `<span class="rsb on">Earned: recommended</span>` : `<span class="rsb ex">Tracking</span><div class="rc-sub">needs ${esc(g.needs.join(", "))}</div>`}</td></tr>`;
   }).join("");
   const now = d.tracking ?? [];
+  // results of tracked picks by game day (Eastern): yesterday and the last 7 days, overall and by market
+  const graded = trackLedger().filter((b) => ["won", "lost", "push"].includes(b.status));
+  const yday = etDate(-1), week0 = addDays(etDate(0), -7);
+  const inY = graded.filter((b) => b.game_date === yday), inW = graded.filter((b) => b.game_date >= week0 && b.game_date <= yday);
+  const sum = (bs) => {
+    const won = bs.filter((b) => b.status === "won").length, lost = bs.filter((b) => b.status === "lost").length, push = bs.length - won - lost;
+    const risk = bs.reduce((a, b) => a + (+b.units || 0), 0), pnl = bs.reduce((a, b) => a + (+b.pnl || 0), 0);
+    const dec = bs.filter((b) => b.status !== "push"), clv = bs.filter((b) => b.clv != null);
+    return { n: bs.length, won, lost, push, risk, pnl, roi: risk ? pnl / risk : null,
+      win: dec.length ? won / dec.length : null, exp: dec.length ? dec.reduce((a, b) => a + (+b.p_market || 0), 0) / dec.length : null,
+      clv: clv.length ? clv.reduce((a, b) => a + +b.clv, 0) / clv.length : null, clvN: clv.length,
+      beat: clv.length ? clv.filter((b) => b.clv > 0.0025).length / clv.length : null };
+  };
+  const rec = (x) => `${x.won}-${x.lost}${x.push ? `-${x.push}` : ""}`;
+  const ucls = (v) => v > 0 ? "res-won" : v < 0 ? "res-lost" : "";
+  const ptile = (title, x) => `<div class="bt-card"><div class="k">${title}</div>
+    <div class="v ${x.n ? ucls(x.pnl) : ""}">${x.n ? signed(x.pnl, 2) + "u" : "—"}</div>
+    <div class="s">${x.n ? `${rec(x)} · ROI ${signed(100 * x.roi, 1)}%<br>won ${pc(x.win)} vs ${pc(x.exp)} expected${x.clvN ? `<br>CLV ${signed(100 * x.clv, 2)} · beat close ${pct(x.beat, 0)}% (${x.clvN})` : ""}` : "no graded tracked picks"}</div></div>`;
+  const sY = sum(inY), sW = sum(inW);
+  const mkOf = (b) => b.kind === "prop" ? b.stat : b.kind;
+  const sideOf = (b) => (b.kind === "prop" || /total/.test(b.kind)) ? " " + (b.stat === "dd" ? (b.side === "over" ? "yes" : "no") : String(b.side).split("_").pop()) : "";
+  const groups = {};
+  for (const b of inW) (groups[(MARKET_LABEL[mkOf(b)] ?? mkOf(b)) + sideOf(b)] ??= []).push(b);
+  const mrows = Object.entries(groups).map(([k, bs]) => [k, sum(bs.filter((b) => b.game_date === yday)), sum(bs)])
+    .sort((a, b) => b[2].n - a[2].n || a[0].localeCompare(b[0]))
+    .map(([k, y, w]) => `<tr><td class="l">${esc(k)}</td><td>${y.n ? rec(y) : "—"}</td><td class="${ucls(y.pnl)}">${y.n ? signed(y.pnl, 2) : "—"}</td>
+      <td>${rec(w)}</td><td class="${ucls(w.pnl)}">${signed(w.pnl, 2)}</td><td>${w.roi != null ? signed(100 * w.roi, 1) + "%" : "—"}</td>
+      <td>${pc(w.win)} <small style="color:var(--muted)">vs ${pc(w.exp)}</small></td>
+      <td class="${ucls(w.clv)}">${w.clv != null ? signed(100 * w.clv, 2) : "—"}</td></tr>`).join("");
+  const periodHtml = `<h4 style="margin:4px 0 8px">Tracked results</h4>
+    <div class="bt-cards">${ptile(`Yesterday · ${fmtDay(yday)}`, sY)}${ptile(`Last 7 days · ${fmtDay(addDays(week0, 0))} – ${fmtDay(yday)}`, sW)}</div>
+    ${mrows ? `<details style="margin:-6px 0 14px"><summary>By market: yesterday and the last 7 days</summary><div class="table-wrap"><table class="rctab"><thead><tr><th class="l">Market</th><th>Yesterday</th><th>Units</th><th>7 days</th><th>Units</th><th>ROI</th><th>Won vs expected</th><th title="Average closing-line value, points of chance">CLV</th></tr></thead><tbody>${mrows}</tbody></table></div></details>` : ""}
+    <p class="pr-note" style="margin:-4px 0 12px">Graded by game day (Eastern). Units are what the pick would have won or lost as a bet; they are not bets. One or two days says very little: the scorecard below, built over the whole season, is what decides recommendations.</p>`;
   const meta = (gid) => { const g = S.simByGame[gid]; return g ? { home_team_id: g.home_team_id, away_team_id: g.away_team_id, tip_utc: g.tip_utc, game_date: g.game_date } : {}; };
   const open = trackLedger().filter((b) => b.status === "open").sort((a, b) => (a.tip_utc ?? "").localeCompare(b.tip_utc ?? ""));
   const recent = trackLedger().filter((b) => ["won", "lost", "push", "void"].includes(b.status)).sort((a, b) => (b.tip_utc ?? "").localeCompare(a.tip_utc ?? ""));
@@ -2240,6 +2273,7 @@ function trackingHtml() {
   return `<div class="panel" style="margin-bottom:12px"><h3>Tracking mode</h3>
     <p class="pr-note" style="margin:0 0 8px">Through about 450 graded bets the picks lost about 11% and did not beat the closing line, so <b>every pick is now tracked first</b>. A market only gets recommendations (shown below, sent to your phone, counted in your record) once its tracked picks earn it: at least ${gt.min_graded ?? 150} graded, ${gt.min_clv ?? 100} with a later price to compare, the closing line moving our way by at least ${gt.clv_z ?? 2} standard errors, and a win rate at least as high as the market's own chances. Unders and overs earn separately. Stakes on tracked picks are what the bet would have been, so the units read like real results.
     ${earned.length ? `<b>Earned so far: ${earned.map((g) => esc(g.label)).join(", ")}.</b>` : "<b>No market has earned recommendations yet.</b>"} Right now ${now.length} pick${now.length === 1 ? "" : "s"} qualify at the latest prices; ${open.length} tracked pick${open.length === 1 ? " is" : "s are"} waiting on results.</p>
+    ${periodHtml}
     <div class="table-wrap"><table class="rctab"><thead><tr><th class="l">Market</th><th>Graded</th><th>Record</th><th title="How often the picks won, against the market's average chance for them">Win rate vs market</th><th title="Average closing-line value in points of chance, and how many standard errors from zero">CLV</th><th title="Share of picks where the market moved toward the pick by tip-off">Beat close</th><th>Units</th><th class="l">Status</th></tr></thead><tbody>${rows || `<tr><td class="l" colspan="8">Nothing graded yet.</td></tr>`}</tbody></table></div>
     ${open.length ? `<h4 style="margin:14px 0 6px">Tracked picks for upcoming games</h4><div class="table-wrap"><table class="rctab"><thead>${head}</thead><tbody>${open.map((b) => tRow(b, true)).join("")}</tbody></table></div>` : ""}
     ${recent.length ? `<details style="margin-top:12px"><summary>Recent tracked results (${recent.length}, last ${d.settings.track_days ?? 10} days)</summary><div class="table-wrap"><table class="rctab"><thead>${head}</thead><tbody>${shownRecent.map((b) => tRow(b, false)).join("")}</tbody></table></div>${recent.length > 40 ? `<button type="button" class="ov-btn" id="tk-more" style="margin-top:8px">${TK.all ? "Show fewer" : `Show all ${recent.length}`}</button>` : ""}</details>` : ""}
