@@ -93,6 +93,15 @@ GATE_MIN_GRADED = 150     # a market earns recommendations only with this many g
 GATE_MIN_CLV = 100        # ... this many with a closing price taken after the pick
 GATE_CLV_Z = 2.0          # ... closing line value above zero by this many standard errors
 MIN_BOOKS_ALT = 2         # alternate lines are quoted by fewer books
+# "Moderate disagreement" rule (tracked since Nov 20, 2026). On ~6,500 graded main props from Nov 12-19 the
+# model's moderate leans beat the market (model 60-70% over: 57% went over vs the market's 52.5%; model 30-40%:
+# 43% vs 47%), while its strong leans did not (under 30%: 49% went over). So: main props where the model gives
+# the over MOD_OVER, or the under MOD_UNDER (the over 30-45%), at the best legal price, with the model on the same
+# side as the market's fair chance moves. Flat MOD_UNITS stake, scored together as one market ("moderate").
+MOD_STATS = ("pts", "reb", "ast", "fg3m", "pra", "pr", "pa", "ra")
+MOD_OVER = (0.55, 0.70)
+MOD_UNDER = (0.30, 0.45)                   # the model's chance of the over
+MOD_UNITS = 0.5
 MIN_PRICE, MAX_PRICE = -250, 250
 
 TABLE = """
@@ -166,8 +175,10 @@ def market_of(kind: str, stat) -> str:
     return stat if kind == "prop" else kind
 
 
-def gate_key(kind: str, stat, side: str) -> str:
+def gate_key(kind: str, stat, side: str, trigger: str = None) -> str:
     """The market a pick is scored and earns recommendations in: props and totals split by side."""
+    if trigger == "moderate":
+        return "moderate"
     if kind == "prop":
         return f"{stat}:{side}"
     if kind in ("total", "total_h1", "alt_total", "team_total"):
@@ -178,7 +189,8 @@ def gate_key(kind: str, stat, side: str) -> str:
 def gate_label(key: str) -> str:
     from .props import STAT_LABEL
     m, _, side = key.partition(":")
-    name = STAT_LABEL.get(m) or KIND_LABEL.get(m) or ("News-driven picks" if m == "news" else m)
+    name = STAT_LABEL.get(m) or KIND_LABEL.get(m) or {"news": "News-driven picks",
+                                                       "moderate": "Moderate disagreement (main props)"}.get(m, m)
     if m == "dd" and side:
         side = "yes" if side == "over" else "no"
     return f"{name} {side}".strip()
@@ -429,6 +441,38 @@ def prop_candidates(rows: list) -> list:
     return out
 
 
+def moderate_candidates(rows: list) -> list:
+    """The moderate-disagreement rule (see MOD_*): no EV or gap filter, the model's lean decides the side.
+    select() keeps one per player: the one with the best expected value."""
+    out = []
+    for r in rows:
+        m = r.get("model")
+        if r.get("alt") or r["stat"] not in MOD_STATS or not m or (m.get("games") or 0) < 5 or \
+                m.get("status") in ("out", "doubtful", "questionable"):
+            continue
+        if m["p_over"] + m["p_under"] <= 0 or len(r["books"]) < MIN_BOOKS:
+            continue
+        po = m["p_over"] / (m["p_over"] + m["p_under"])
+        if MOD_OVER[0] <= po <= MOD_OVER[1]:
+            side, p_mod, p_mkt, best = "over", po, r["fair_over"], r["best_over"]
+        elif MOD_UNDER[0] <= po <= MOD_UNDER[1]:
+            side, p_mod, p_mkt, best = "under", 1 - po, 1 - r["fair_over"], r["best_under"]
+        else:
+            continue
+        price = (best or {}).get("price")
+        if price is None or not (MIN_PRICE <= price <= MAX_PRICE) or p_mod <= p_mkt:
+            continue
+        p = BLEND * p_mod + (1 - BLEND) * p_mkt
+        ev = p * PM.decimal(price) - 1
+        out.append({"kind": "prop", "game_id": r["game_id"], "side": side, "line": r["line"], "price": int(price),
+                    "book": best.get("book"), "p_model": round(p_mod, 4), "p_market": round(p_mkt, 4),
+                    "p_used": round(p, 4), "ev": round(ev, 4), "units": MOD_UNITS, "units_full": MOD_UNITS,
+                    "books": len(r["books"]), "player_id": r["player_id"], "stat": r["stat"],
+                    "model_mean": m["mean"], "model_min": m["min"], "fetched_at": r.get("fetched_at"),
+                    "trigger": "moderate", "gate": "moderate"})
+    return out
+
+
 def game_candidates(table: list, sims: dict) -> list:
     by_game = {g["game_id"]: g for g in (sims or {}).get("games", [])}
     report = ((sims or {}).get("model") or {}).get("report", {}).get("scores", {})
@@ -458,7 +502,9 @@ def game_candidates(table: list, sims: dict) -> list:
 
 
 def pick_key(c: dict) -> tuple:
-    """One pick per player and market, and per game and market family."""
+    """One pick per player and market, and per game and market family (each rule on its own)."""
+    if c.get("trigger") == "moderate":      # one per player (his stats move together), the biggest edge
+        return ("moderate", c["game_id"], c["player_id"])
     if c["kind"] == "prop":
         return ("prop", c["game_id"], c["player_id"], c["stat"])
     if c["kind"] in ("moneyline", "spread"):
@@ -531,7 +577,9 @@ def lock(conn, picks: list, games: dict, now_iso: str) -> int:
                 (MAX_DAY_UNITS is not None and u_day + c["units"] > MAX_DAY_UNITS):
             continue
         if c["kind"] == "prop":
-            exists = conn.execute("SELECT 1 FROM bets WHERE game_id=? AND kind='prop' AND player_id=? AND stat=?",
+            rule = "COALESCE(trigger,'') = 'moderate'" if c.get("trigger") == "moderate" else \
+                "COALESCE(trigger,'') != 'moderate'"
+            exists = conn.execute(f"SELECT 1 FROM bets WHERE game_id=? AND kind='prop' AND player_id=? AND stat=? AND {rule}",
                                   (c["game_id"], c["player_id"], c["stat"])).fetchone()
         elif c["kind"] in ("moneyline", "spread"):
             exists = conn.execute("SELECT 1 FROM bets WHERE game_id=? AND kind IN ('moneyline','spread')",
@@ -560,6 +608,8 @@ def lock(conn, picks: list, games: dict, now_iso: str) -> int:
 
 def _same(c: dict, b: dict) -> bool:
     if c["game_id"] != b["game_id"] or c["kind"] != b["kind"] or c["side"] != b["side"]:
+        return False
+    if (c.get("trigger") == "moderate") != (b.get("trigger") == "moderate"):
         return False
     return c["kind"] != "prop" or (int(c["player_id"]) == int(b["player_id"]) and c["stat"] == b["stat"])
 
@@ -830,11 +880,13 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
     from .props import _latest_odds
     gmap = {g["game_id"]: g for g in games}
     table = game_market_table(_latest_odds(conn, list(gmap), props=False))
+    table = [t for t in table if t["market"] not in OA.OLD_EVENT_GAME_MARKETS]      # no longer tracked
     cands = prop_candidates(prop_rows or []) + game_candidates(table, sims)
     news = set((pulled or {}).get("news_games") or [])
     for c in cands:                     # picked from a news pull's prices
         if c["game_id"] in news and c.get("fetched_at") == (pulled or {}).get("fetched_at"):
             c["trigger"] = "news"
+    cands += moderate_candidates(prop_rows or [])
     gate_info = gates(_ledger(conn))
     picks = select(cands, gate_info)
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
