@@ -47,12 +47,14 @@ ALT_MARKETS = {f"{k}_alternate": f"alt_{v}" for k, v in (
     ("player_points_rebounds_assists", "pra"), ("player_points_rebounds", "pr"), ("player_points_assists", "pa"),
     ("player_rebounds_assists", "ra"), ("player_blocks", "blk"), ("player_steals", "stl"),
     ("player_turnovers", "tov"))}
-EVENT_GAME_MARKETS = ("team_totals", "h2h_h1", "spreads_h1", "totals_h1", "alternate_spreads", "alternate_totals")
+# alternate spreads/totals were dropped Nov 20, 2026: 37 tracked picks won 19% against 31% expected
+EVENT_GAME_MARKETS = ("team_totals", "h2h_h1", "spreads_h1", "totals_h1")
+OLD_EVENT_GAME_MARKETS = ("alternate_spreads", "alternate_totals")      # still read for grading old picks
 EXT_MARKETS = (*EXTRA_PROP_MARKETS, *ALT_MARKETS, *EVENT_GAME_MARKETS)
 PROP_MARKETS = {**MARKETS, **EXTRA_PROP_MARKETS, **ALT_MARKETS}     # market key -> our stat code
 STAT_MARKET = {v: k for k, v in PROP_MARKETS.items()}
 GAME_MARKETS = ("h2h", "spreads", "totals")
-ALL_GAME_MARKETS = (*GAME_MARKETS, *EVENT_GAME_MARKETS)
+ALL_GAME_MARKETS = (*GAME_MARKETS, *EVENT_GAME_MARKETS, *OLD_EVENT_GAME_MARKETS)
 REGION = "us"
 # State-licensed US sportsbooks. The "us" region also carries offshore books
 # (Bovada, BetOnline, MyBookie, LowVig, BetUS); those are stored but never used.
