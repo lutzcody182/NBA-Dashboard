@@ -44,7 +44,7 @@ def test_parse_event_game_lines():
     sides = {(r["market"], r["side"], r["line"]) for r in rows}
     assert ("team_totals", "home_over", 121.5) in sides and ("team_totals", "away_over", 108.5) in sides
     assert ("h2h_h1", "home", 0.0) in sides and ("spreads_h1", "away", 6.5) in sides
-    assert ("alternate_totals", "over", 235.5) in sides
+    assert not any(m == "alternate_totals" for m, _, _ in sides)      # dropped Nov 20, 2026
 
 
 def test_plan_pull_extra_markets_and_news():
@@ -166,10 +166,33 @@ def test_grade_new_kinds_and_closing_value():
 
 def test_first_half_waits_for_matching_play_by_play():
     c = _db()
-    c.execute("INSERT INTO games VALUES ('g','2026-27','2026-11-15','2026-11-16T00:00:00Z',1,2,'final',112,108)")
+    tip = (datetime.now(timezone.utc) - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    c.execute("INSERT INTO games VALUES ('g','2026-27','2026-11-15',?,1,2,'final',112,108)", (tip,))
     c.execute("INSERT INTO pbp_poss VALUES ('g', 1, 1, 30)")                  # doesn't add up to the final
     c.execute("""INSERT INTO bets (created_at, game_id, kind, side, line, price, book, p_model, p_market, p_used, ev,
                  units) VALUES ('2026-11-15T20:00:00Z','g','total_h1','over',110.5,-110,'fanduel',.55,.5,.52,.04,.5)""")
     c.commit()
     B.grade(c, "2026-27")
     assert c.execute("SELECT status FROM bets").fetchone()[0] == "open"
+
+
+def test_moderate_rule_and_its_own_ledger_rows():
+    base = {"game_id": "g", "player_id": 7, "stat": "pts", "line": 20.5,
+            "books": [{"book": b} for b in ("fanduel", "draftkings", "betmgm")],
+            "best_over": {"price": -110, "book": "fanduel"}, "best_under": {"price": -110, "book": "fanduel"}}
+    mk = lambda po, fair: {**base, "fair_over": fair, "model": {"p_over": po, "p_under": 1 - po, "games": 20,
+                                                                "status": "available", "mean": 21, "min": 32}}
+    out = B.moderate_candidates([mk(0.62, 0.52), mk(0.38, 0.50), mk(0.25, 0.50), mk(0.62, 0.66),
+                                 {**mk(0.6, 0.5), "stat": "stl"}, {**mk(0.6, 0.5), "alt": True}])
+    assert [(c["side"], c["gate"], c["units"]) for c in out] == [("over", "moderate", 0.5), ("under", "moderate", 0.5)]
+    assert B.gate_key("prop", "pts", "over", "moderate") == "moderate"
+    c = _db()
+    c.execute("INSERT INTO games VALUES ('g','2026-27','2026-11-20','2099-01-01T00:00:00Z',1,2,'scheduled',NULL,NULL)")
+    std = {"kind": "prop", "game_id": "g", "side": "over", "line": 20.5, "price": -110, "book": "fanduel",
+           "p_model": .6, "p_market": .5, "p_used": .53, "ev": .05, "units": .5, "player_id": 7, "stat": "pts",
+           "mode": "track", "gate": "pts:over"}
+    games = {"g": {"game_id": "g", "tip_utc": "2099-01-01T00:00:00Z", "game_date": "2026-11-20"}}
+    assert B.lock(c, [std, {**out[0], "mode": "track"}], games, "2026-11-20T15:00:00Z") == 2   # both rules keep a row
+    assert B.lock(c, [{**out[0], "mode": "track"}], games, "2026-11-20T16:00:00Z") == 0        # once each
+    picks = B.select([dict(std), dict(out[0])], {})
+    assert len(picks) == 2
