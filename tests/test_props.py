@@ -212,6 +212,7 @@ def test_pull_fetches_only_due_games(tmp_path, monkeypatch):
         return {"bookmakers": []}, 14990.0
     monkeypatch.setattr(OA, "_get", fake_get)
     monkeypatch.setenv("ODDS_API_KEY", "test")
+    monkeypatch.setattr(OA, "ODDS_ENABLED", True)
     out = OA.pull(conn, games, {}, now=NOW, et_day="2026-10-28")
     assert "/events/e1/odds" in calls and "/events/e2/odds" not in calls and out["games"] == 1
     st = OA._state(conn)
