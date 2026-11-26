@@ -37,6 +37,10 @@ MARKETS = {
     "player_points_rebounds_assists": "pra", "player_points_rebounds": "pr", "player_points_assists": "pa",
     "player_rebounds_assists": "ra",
 }
+# Off since Nov 26, 2026: the picks model was retired (no edge over ~450 bets and ~1,500 tracked picks), so the
+# NBA dashboard no longer pulls odds and the shared key's credits go to NHL and NFL. Set True to pull again.
+ODDS_ENABLED = False
+
 # extra markets, two pulls a game a day (see the module notes)
 EXTRA_PROP_MARKETS = {
     "player_steals": "stl", "player_blocks": "blk", "player_blocks_steals": "stocks", "player_turnovers": "tov",
@@ -343,6 +347,8 @@ def pull(conn, games: list, rosters: dict, now: datetime = None, et_day: str = N
     rosters: game_id -> {normalized name: player_id}.
     fingerprints: game_id -> a summary of its injury statuses and confirmed lineups, to spot news.
     """
+    if not ODDS_ENABLED:
+        return {"status": "skipped", "reason": "NBA odds pulls are turned off (picks model retired Nov 26, 2026)"}
     key = os.environ.get("ODDS_API_KEY", "").strip()
     if not key:
         return {"status": "skipped", "reason": "no ODDS_API_KEY set"}
