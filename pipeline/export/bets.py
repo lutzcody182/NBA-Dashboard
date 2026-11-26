@@ -93,6 +93,10 @@ GATE_MIN_GRADED = 150     # a market earns recommendations only with this many g
 GATE_MIN_CLV = 100        # ... this many with a closing price taken after the pick
 GATE_CLV_Z = 2.0          # ... closing line value above zero by this many standard errors
 MIN_BOOKS_ALT = 2         # alternate lines are quoted by fewer books
+# Retired Nov 26, 2026: after ~450 graded recommendations (-11%) and ~1,500 tracked picks (-9%, no closing-line
+# edge, and fading the model lost too), no new picks are made or tracked. Open picks are still graded and the
+# full record stays on the dashboard. Set True (and odds_api.ODDS_ENABLED) to start again.
+PICKS_ENABLED = False
 # "Moderate disagreement" rule (tracked since Nov 20, 2026). On ~6,500 graded main props from Nov 12-19 the
 # model's moderate leans beat the market (model 60-70% over: 57% went over vs the market's 52.5%; model 30-40%:
 # 43% vs 47%), while its strong leans did not (under 30%: 49% went over). So: main props where the model gives
@@ -887,6 +891,8 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
         if c["game_id"] in news and c.get("fetched_at") == (pulled or {}).get("fetched_at"):
             c["trigger"] = "news"
     cands += moderate_candidates(prop_rows or [])
+    if not PICKS_ENABLED:
+        cands = []
     gate_info = gates(_ledger(conn))
     picks = select(cands, gate_info)
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -895,7 +901,7 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
     lockable = [c for c in picks if (c.get("fetched_at") or "") >= cutoff]
     added = lock(conn, lockable, gmap, now_iso)
     try:
-        states = track(conn, picks, cands, prop_rows or [], table, gmap, now_iso)
+        states = track(conn, picks, cands, prop_rows or [], table, gmap, now_iso) if PICKS_ENABLED else {}
     except Exception:
         log.exception("Tracking recommendation states failed")
         states = {}
@@ -938,7 +944,7 @@ def export(conn, out_dir, season: str, games: list, sims: dict, prop_rows: list,
                      "unit_pct": UNIT_PCT, "max_units": MAX_UNITS, "full_max_units": FULL_MAX_UNITS, "prop_overs": PROP_OVERS, "max_game_units": MAX_GAME_UNITS,
                      "max_day_picks": MAX_DAY_PICKS, "max_day_units": MAX_DAY_UNITS,
                      "price_range": [MIN_PRICE, MAX_PRICE], "legal_books": sorted(OA.LEGAL_BOOKS), "bet_books": sorted(OA.BET_BOOKS),
-                     "tracking": True, "gate": {"min_graded": GATE_MIN_GRADED, "min_clv": GATE_MIN_CLV,
+                     "tracking": True, "picks_enabled": PICKS_ENABLED, "gate": {"min_graded": GATE_MIN_GRADED, "min_clv": GATE_MIN_CLV,
                                                 "clv_z": GATE_CLV_Z}, "track_days": TRACK_DAYS},
         "current": [c for c in picks if c["mode"] == "rec"],
         "tracking": [c for c in picks if c["mode"] == "track"],
