@@ -196,3 +196,10 @@ def test_moderate_rule_and_its_own_ledger_rows():
     assert B.lock(c, [{**out[0], "mode": "track"}], games, "2026-11-20T16:00:00Z") == 0        # once each
     picks = B.select([dict(std), dict(out[0])], {})
     assert len(picks) == 2
+
+
+def test_picks_and_odds_are_off():
+    """Retired Nov 26, 2026: no odds pulls, no new picks."""
+    assert OA.ODDS_ENABLED is False and B.PICKS_ENABLED is False
+    out = OA.pull(None, [], {})
+    assert out["status"] == "skipped" and "turned off" in out["reason"]
