@@ -478,9 +478,6 @@ p.sec-sub { color: var(--muted); font-size: 13px; margin: 0 0 10px; max-width: 8
   <h1 class="brand">NBA Court <span>Lab</span></h1>
   <nav class="tabs" role="tablist" aria-label="Sections">
     <button class="tab" role="tab" data-view="games" aria-selected="true">Games</button>
-    <button class="tab" role="tab" data-view="bets" aria-selected="false">Bets</button>
-    <button class="tab" role="tab" data-view="recs" aria-selected="false">Recommended Bets</button>
-    <button class="tab" role="tab" data-view="props" aria-selected="false">Props</button>
     <button class="tab" role="tab" data-view="daily" aria-selected="false">Daily</button>
     <button class="tab" role="tab" data-view="leaders" aria-selected="false">Leaders</button>
     <button class="tab" role="tab" data-view="teams" aria-selected="false">Teams</button>
@@ -2311,12 +2308,13 @@ function recAsk(list) {
 }
 function recBanner() {
   const el = $("#rc-banner"); if (!el) return;
+  if (RETIRED_VIEWS.includes("recs")) { el.innerHTML = ""; return; }      // picks retired: no "did you place it?" prompts
   const all = S.bets ? betLedger() : [], pend = ovReconcile(all), n = recRows().filter((b) => recNeeds(b, pend)).length;
   el.innerHTML = n && location.hash.slice(1) !== "recs" ? `<div class="rc-banner">⚠️ <b>${n} recommended bet${n === 1 ? "" : "s"}</b> ended without an answer. Did you place ${n === 1 ? "it" : "them"}? <button type="button" class="ov-btn" id="rc-go">Review</button></div>` : "";
   $("#rc-go")?.addEventListener("click", () => { RC.f = "needs"; showView("recs"); });
 }
 function recCheck() {
-  if (!S.bets) return;
+  if (!S.bets || RETIRED_VIEWS.includes("recs")) return;
   const all = betLedger(), pend = ovReconcile(all), seen = recSeenGet();
   const ended = recRows().filter((b) => seen.has(b.bet_id) && recState(b) !== "active" && placeState(b, pend) === "pending" && !RC.asked.has(b.bet_id));
   if (ended.length) recAsk(ended);
@@ -2336,6 +2334,7 @@ function initRecs() {
   });
   $("#rc-ask-close").addEventListener("click", () => { $("#rc-ask").close(); recBanner(); });
   $("#rc-ask-done").addEventListener("click", () => { $("#rc-ask").close(); recBanner(); });
+  if (RETIRED_VIEWS.includes("recs")) return;          // picks retired: nothing to refresh or ask about
   setTimeout(recCheck, 1500);
   setInterval(recRefresh, 10 * 60e3);
 }
@@ -3840,7 +3839,11 @@ async function renderScorecard() {
 }
 
 // ---------- navigation ----------
+// The Bets, Recommended Bets and Props tabs were removed Nov 27, 2026, after the picks model was retired.
+// Their sections stay in the page, unreachable, so old links (#bets, #recs, #props) land on Games instead.
+const RETIRED_VIEWS = ["bets", "recs", "props"];
 function showView(name) {
+  if (RETIRED_VIEWS.includes(name)) name = "games";
   document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.view === name)));
   document.querySelectorAll(".view").forEach((v) => (v.hidden = v.id !== "view-" + name));
   if (name === "teams" && S.teamsView.team) setTimeout(() => echarts?.getInstanceByDom($("#trend"))?.resize(), 0);
